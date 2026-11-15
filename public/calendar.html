@@ -5,11 +5,17 @@
 <body><canvas id="snow" aria-hidden="true"></canvas><canvas id="confetti" aria-hidden="true"></canvas><div id="lights" aria-hidden="true"></div>
 <header class="top"><h1>12 Movies of Christmas</h1>
 <div class="tools"><span id="hello"></span>
+<div id="settings" class="settings">
+<button id="settings-toggle" class="icon" aria-label="Open settings" aria-controls="settings-panel" aria-expanded="false"><span aria-hidden="true">☰</span></button>
+<section id="settings-panel" class="settings-panel" aria-label="Settings" hidden>
+<h2>Settings</h2>
+<div class="settings-controls">
 <button id="mute" class="icon" aria-label="Mute sounds">🔊</button>
 <button id="music" class="icon" aria-label="Toggle background music" aria-pressed="false">🎵</button>
-<input id="vol" type="range" min="0" max="1" step=".05" aria-label="Volume">
+<label for="vol">Volume <input id="vol" type="range" min="0" max="1" step=".05" aria-label="Volume"></label>
 <button id="calm" class="icon" aria-label="Reduce motion" aria-pressed="false">🐢</button>
 <button id="theme" class="icon" aria-label="Change background colour">🎨</button>
+</div></section></div>
 <button id="out" class="icon" aria-label="Log out">🚪</button></div></header>
 <div class="wave"></div>
 <div id="banner" class="banner" hidden></div>
