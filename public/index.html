@@ -1,0 +1,15 @@
+<!doctype html><html lang="en"><head><title>12 Movies of Christmas</title><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Mountains+of+Christmas:wght@700&family=Nunito:wght@400;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/style.css"></head>
+<body><canvas id="snow" aria-hidden="true"></canvas><div id="lights" aria-hidden="true"></div>
+<main class="login"><h1>🎄 12 Movies of Christmas</h1><p>Log in to open today's door.</p>
+<form id="lf"><label>Username <input id="u" autocomplete="username" required></label>
+<label>Password <input id="p" type="password" autocomplete="current-password" required></label>
+<button class="btn">Open the calendar</button><p id="err" class="err" role="alert"></p></form>
+<p class="small"><a href="admin.html">Admin</a></p></main>
+<script src="js/api.js"></script><script src="js/fx.js"></script>
+<script>
+api('/me').then(()=>location.href='calendar.html').catch(()=>{});
+$('#lf').onsubmit=async e=>{e.preventDefault();try{await api('/login',{method:'POST',body:{username:$('#u').value,password:$('#p').value}});location.href='calendar.html';}catch(x){$('#err').textContent=x.message;}};
+</script></body></html>

@@ -1,0 +1,20 @@
+<!doctype html><html lang="en"><head><title>12 Movies of Christmas</title><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Mountains+of+Christmas:wght@700&family=Nunito:wght@400;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/style.css"></head>
+<body><canvas id="snow" aria-hidden="true"></canvas><canvas id="confetti" aria-hidden="true"></canvas><div id="lights" aria-hidden="true"></div>
+<header class="top"><h1>12 Movies of Christmas</h1>
+<div class="tools"><span id="hello"></span>
+<button id="mute" class="icon" aria-label="Mute sounds">🔊</button>
+<button id="music" class="icon" aria-label="Toggle background music" aria-pressed="false">🎵</button>
+<input id="vol" type="range" min="0" max="1" step=".05" aria-label="Volume">
+<button id="calm" class="icon" aria-label="Reduce motion" aria-pressed="false">🐢</button>
+<button id="theme" class="icon" aria-label="Change background colour">🎨</button>
+<button id="out" class="icon" aria-label="Log out">🚪</button></div></header>
+<div class="wave"></div>
+<div id="banner" class="banner" hidden></div>
+<main><div id="grid" class="grid"></div></main>
+<div id="toast" class="toast" role="status" hidden></div>
+<div id="modal" class="modal" hidden role="dialog" aria-modal="true" aria-labelledby="mt"><div class="card">
+<button id="close" class="icon" aria-label="Close">✕</button><div id="mbody" class="mbody"></div></div></div>
+<script src="js/api.js"></script><script src="js/fx.js"></script><script src="js/audio.js"></script><script src="js/calendar.js"></script></body></html>
