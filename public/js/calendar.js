@@ -32,14 +32,36 @@
 
   // ----- controls (all remembered in localStorage) -----
   const flip = (id, k, fn) => { $(id).onclick = () => { prefs[k] = !prefs[k]; savePrefs(); fn && fn(); show(); }; };
+  const themes = [
+    { id: 'midnight', label: 'Midnight' }, { id: 'pine', label: 'Pine' },
+    { id: 'cranberry', label: 'Cranberry' }, { id: 'aurora', label: 'Aurora' },
+    { id: 'plum', label: 'Plum' },
+  ];
   const show = () => { $('#mute').textContent = prefs.muted ? '🔇' : '🔊'; $('#mute').setAttribute('aria-pressed', !!prefs.muted);
     $('#music').setAttribute('aria-pressed', !!prefs.music); $('#music').classList.toggle('on', !!prefs.music);
-    $('#calm').setAttribute('aria-pressed', reduced()); $('#vol').value = vol(); };
+    $('#calm').setAttribute('aria-pressed', reduced()); $('#vol').value = vol();
+    const theme = themes.find(option => option.id === (prefs.theme || 'midnight')) || themes[0];
+    $('#theme').setAttribute('aria-label', `Change background colour (currently ${theme.label})`); };
   flip('#mute', 'muted', syncAudio);
   flip('#music', 'music', () => prefs.music ? music.play().catch(() => {}) : music.pause());
   $('#calm').onclick = () => { prefs.calm = !reduced(); savePrefs(); applyPrefs(); show(); };
   $('#vol').oninput = e => { prefs.vol = +e.target.value; savePrefs(); syncAudio(); };
-  $('#theme').onclick = () => { prefs.theme = prefs.theme === 'pine' ? 'midnight' : 'pine'; savePrefs(); applyPrefs(); };
+  $('#theme').onclick = () => {
+    const current = themes.findIndex(option => option.id === (prefs.theme || 'midnight'));
+    prefs.theme = themes[(current + 1) % themes.length].id;
+    savePrefs(); applyPrefs(); show();
+  };
+  const settings = $('#settings'), settingsToggle = $('#settings-toggle'), settingsPanel = $('#settings-panel');
+  const closeSettings = () => { settingsPanel.hidden = true; settingsToggle.setAttribute('aria-expanded', 'false'); settingsToggle.setAttribute('aria-label', 'Open settings'); };
+  settingsToggle.onclick = () => {
+    settingsPanel.hidden = !settingsPanel.hidden;
+    settingsToggle.setAttribute('aria-expanded', String(!settingsPanel.hidden));
+    settingsToggle.setAttribute('aria-label', settingsPanel.hidden ? 'Open settings' : 'Close settings');
+  };
+  document.addEventListener('click', e => { if (!settings.contains(e.target)) closeSettings(); });
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && !settingsPanel.hidden) { closeSettings(); settingsToggle.focus(); }
+  });
   $('#out').onclick = async () => { await api('/logout', { method: 'POST' }); location.href = '/'; };
   show();
 })();
