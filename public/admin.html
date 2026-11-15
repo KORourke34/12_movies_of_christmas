@@ -1,19 +1,73 @@
-<!doctype html><html lang="en"><head><title>Admin – 12 Movies of Christmas</title><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Mountains+of+Christmas:wght@700&family=Nunito:wght@400;700;800&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="css/style.css"></head>
-<body><canvas id="snow" aria-hidden="true"></canvas>
-<main id="login" class="login"><h1>🎅 Admin</h1><form id="lf">
-<label>Username <input id="u" autocomplete="username" required></label>
-<label>Password <input id="p" type="password" autocomplete="current-password" required></label>
-<button class="btn">Log in</button><p id="err" class="err" role="alert"></p></form></main>
-<main id="dash" class="admin" hidden><h1>Admin dashboard</h1><p><a href="calendar.html">← Calendar</a></p>
-<h2>Doors</h2><div id="doors"></div>
-<h2>Friends' accounts</h2><ul id="users"></ul>
-<form id="uf" class="row"><input id="nu" placeholder="username" required><input id="np" placeholder="password (4+)" required><button class="btn">Add friend</button></form>
-<h2>Backup</h2><p class="small">Free hosts can reset the database when they restart. Download a backup after every change.</p>
-<a class="btn" href="/api/admin/backup">Download backup</a> <label class="btn">Restore backup<input id="rs" type="file" accept=".json" hidden></label>
-<p id="msg" role="status"></p></main>
-<div id="modal" class="modal" hidden role="dialog" aria-modal="true" aria-labelledby="mt"><div class="card">
-<button id="close" class="icon" aria-label="Close">✕</button><div id="mbody" class="mbody"></div></div></div>
-<script src="js/api.js"></script><script src="js/fx.js"></script><script src="js/admin.js"></script></body></html>
+<!doctype html>
+<html lang="en">
+  <head>
+    <title>Admin – 12 Movies of Christmas</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+      href="https://fonts.googleapis.com/css2?family=Mountains+of+Christmas:wght@700&family=Nunito:wght@400;700;800&display=swap"
+      rel="stylesheet"
+    >
+    <link rel="stylesheet" href="css/style.css">
+  </head>
+  <body>
+    <canvas id="snow" aria-hidden="true"></canvas>
+    <main id="login" class="login">
+      <h1>🎅 Admin</h1>
+      <form id="lf">
+        <label>
+          Username
+          <input id="u" autocomplete="username" required>
+        </label>
+        <label>
+          Password
+          <input id="p" type="password" autocomplete="current-password" required>
+        </label>
+        <button class="btn">Log in</button>
+        <p id="err" class="err" role="alert"></p>
+      </form>
+    </main>
+    <main id="dash" class="admin" hidden>
+      <h1>Admin dashboard</h1>
+      <p><a href="calendar.html">← Calendar</a></p>
+      <h2>Doors</h2>
+      <div id="doors"></div>
+      <h2>Friends' accounts</h2>
+      <ul id="users"></ul>
+      <form id="uf" class="row">
+        <input id="nu" placeholder="username" required>
+        <input id="np" placeholder="password (4+)" required>
+        <button class="btn">Add friend</button>
+      </form>
+      <h2>Backup</h2>
+      <p class="small">
+        Free hosts can reset the database when they restart. Download a backup
+        after every change.
+      </p>
+      <a class="btn" href="/api/admin/backup">Download backup</a>
+      <label class="btn">
+        Restore backup
+        <input id="rs" type="file" accept=".json" hidden>
+      </label>
+      <p id="msg" role="status"></p>
+    </main>
+    <div
+      id="modal"
+      class="modal"
+      hidden
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="mt"
+    >
+      <div class="card">
+        <button id="close" class="icon" aria-label="Close">✕</button>
+        <div id="mbody" class="mbody"></div>
+      </div>
+    </div>
+    <script src="js/api.js"></script>
+    <script src="js/fx.js"></script>
+    <script src="js/admin.js"></script>
+  </body>
+</html>
