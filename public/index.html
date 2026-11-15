@@ -7,7 +7,7 @@
 <form id="lf"><label>Username <input id="u" autocomplete="username" required></label>
 <label>Password <input id="p" type="password" autocomplete="current-password" required></label>
 <button class="btn">Open the calendar</button><p id="err" class="err" role="alert"></p></form>
-<p class="small"><a href="admin.html">Admin</a></p></main>
+<p class="small"><a href="register.html">Create an account</a> · <a href="admin.html">Admin</a></p></main>
 <script src="js/api.js"></script><script src="js/fx.js"></script>
 <script>
 api('/me').then(()=>location.href='calendar.html').catch(()=>{});
