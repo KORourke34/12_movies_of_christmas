@@ -11,7 +11,7 @@ const sfx = {
   open() { tone(110, 0, .4, 'sawtooth', .1); [1047, 1319, 1568, 2093, 1568].forEach((f, i) => tone(f, .1 * i + .1, .5, 'triangle')); }, // creak + sparkle chime
   nope() { tone(200, 0, .15, 'square', .1); tone(150, .15, .2, 'square', .1); },
 };
-const music = new Audio('assets/sounds/music.mp3'); music.loop = true;
+const music = new Audio('assets/sounds/backgroundmusic.mp3'); music.loop = true;
 const syncAudio = () => { music.volume = vol(); music.muted = !!prefs.muted; };
 syncAudio();
 addEventListener('pointerdown', () => prefs.music && music.play().catch(() => {}), { once: true }); // browsers need a click first
