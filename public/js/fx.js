@@ -112,7 +112,7 @@ function movieHTML(d) {
   // the content of the pop-up (also used for admin preview)
   return `${d.poster ? `<img class="poster" src="${esc(d.poster)}" alt="Poster for ${esc(d.title)}">` : '<div class="poster none">🎬</div>'}
   <div><h2 id="mt">${esc(d.title || 'Surprise!')}</h2><p class="meta">${[d.year, d.runtime, d.genre].filter(Boolean).map(esc).join(' • ')}</p>
-  <p>${esc(d.synopsis)}</p>${d.watch ? `<p class="watch">📺 Watch on: <b>${esc(d.watch)}</b></p>` : ''}</div>`;
+  <p>${esc(d.synopsis)}</p>${d.watch ? `<p class="watch">📺 Watch on: <b>${esc(d.watch)}</b></p>` : ''}${d.unlocked && d.title && Number.isInteger(d.door) ? `<label class="watched-control card-watched-control"><input class="watched-toggle" type="checkbox" data-door="${d.door}" ${d.watched ? 'checked' : ''}><span>I've watched this movie</span></label>` : ''}</div>`;
 }
 
 let lastFocus;
@@ -130,7 +130,9 @@ function closeModal() {
 
 if ($('#modal')) {
   $('#close').onclick = closeModal;
-  $('#modal').onclick = (e) => e.target.id === 'modal' && closeModal();
+  $('#modal').onclick = (e) => {
+    if (e.target === $('#modal')) closeModal();
+  };
   addEventListener(
     'keydown',
     (e) => e.key === 'Escape' && !$('#modal').hidden && closeModal(),

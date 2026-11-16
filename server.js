@@ -12,7 +12,18 @@ const SECRET = process.env.SECRET || 'dev-only-change-me'; // set a long random 
 const db = new Database(
   process.env.DB_PATH || path.join(__dirname, 'advent.db'),
 );
+db.pragma('foreign_keys = ON');
 const F = ['title', 'year', 'runtime', 'genre', 'synopsis', 'watch', 'poster']; // movie fields
+const AVATARS = new Set([
+  'santa',
+  'reindeer',
+  'snowman',
+  'elf',
+  'penguin',
+  'gingerbread',
+  'tree',
+  'present',
+]);
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS users(
@@ -41,12 +52,21 @@ for (const [column, definition] of Object.entries({
   first_name: 'TEXT',
   last_name: 'TEXT',
   email: 'TEXT',
+  avatar: "TEXT NOT NULL DEFAULT 'santa'",
 })) {
   if (!userColumns.has(column)) {
     db.exec(`ALTER TABLE users ADD COLUMN ${column} ${definition}`);
   }
 }
 db.exec('CREATE UNIQUE INDEX IF NOT EXISTS users_email_unique ON users(email)');
+db.exec(`
+  CREATE TABLE IF NOT EXISTS watched_movies(
+    username TEXT NOT NULL REFERENCES users(username) ON DELETE CASCADE,
+    door INTEGER NOT NULL REFERENCES doors(door) ON DELETE CASCADE,
+    watched_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY(username, door)
+  );
+`);
 
 cfg.dates.forEach((d, i) => {
   db.prepare('INSERT OR IGNORE INTO doors(door, unlock_at) VALUES(?,?)').run(
@@ -74,12 +94,24 @@ app.use(express.json({ limit: '8mb' }), cookieParser());
 const today = () =>
   new Date().toLocaleDateString('en-CA', { timeZone: cfg.timezone });
 const auth = (req, res, next) => {
+  let claims;
   try {
-    req.user = jwt.verify(req.cookies.t, SECRET);
-    next();
+    claims = jwt.verify(req.cookies.t, SECRET);
   } catch {
-    res.status(401).json({ error: 'Please log in' });
+    return res.status(401).json({ error: 'Please log in' });
   }
+
+  let username = claims.username;
+  if (!username) {
+    const matches = db
+      .prepare('SELECT username FROM users WHERE name=?')
+      .all(claims.name);
+    if (matches.length === 1) username = matches[0].username;
+  }
+  if (!username) return res.status(401).json({ error: 'Please log in again' });
+
+  req.user = { ...claims, username };
+  next();
 };
 const admin = (req, res, next) =>
   req.user.admin ? next() : res.status(403).json({ error: 'Admins only' });
@@ -88,7 +120,7 @@ const admin = (req, res, next) =>
 const setSession = (res, u) => {
   res.cookie(
     't',
-    jwt.sign({ name: u.name, admin: !!u.admin }, SECRET, {
+    jwt.sign({ username: u.username, name: u.name, admin: !!u.admin }, SECRET, {
       expiresIn: '30d',
     }),
     {
@@ -167,27 +199,112 @@ app.post('/api/register', (req, res) => {
     throw error;
   }
 
-  setSession(res, { name, admin: false });
+  setSession(res, { username: normalizedUsername, name, admin: false });
   res.status(201).json({ name, admin: false });
 });
 
 app.post('/api/logout', (req, res) => res.clearCookie('t').json({ ok: true }));
-app.get('/api/me', auth, (req, res) =>
-  res.json({ name: req.user.name, admin: req.user.admin }),
-);
+const movieProgress = (username) => {
+  const { movieCount, watchedCount } = db
+    .prepare(
+      `SELECT COUNT(d.door) AS movieCount, COUNT(w.door) AS watchedCount
+      FROM doors d
+      LEFT JOIN watched_movies w ON w.door=d.door AND w.username=?
+      WHERE trim(COALESCE(d.title, '')) <> ''`,
+    )
+    .get(username);
+
+  return {
+    movieCount,
+    watchedCount,
+    watchedPercentage: movieCount
+      ? Math.round((watchedCount / movieCount) * 100)
+      : 0,
+  };
+};
+
+app.get('/api/me', auth, (req, res) => {
+  const user = db
+    .prepare(
+      'SELECT username,name,first_name,last_name,email,admin,avatar FROM users WHERE username=?',
+    )
+    .get(req.user.username);
+  if (!user) return res.status(401).json({ error: 'Please log in again' });
+
+  res.json({
+    ...user,
+    admin: !!user.admin,
+    avatar: AVATARS.has(user.avatar) ? user.avatar : 'santa',
+    ...movieProgress(user.username),
+  });
+});
+
+app.put('/api/profile/avatar', auth, (req, res) => {
+  const { avatar } = req.body || {};
+  if (typeof avatar !== 'string' || !AVATARS.has(avatar)) {
+    return res.status(400).json({ error: 'Choose a profile picture from the list' });
+  }
+
+  db.prepare('UPDATE users SET avatar=? WHERE username=?').run(
+    avatar,
+    req.user.username,
+  );
+  res.json({ avatar });
+});
 
 // ----- calendar (friends) -----
 app.get('/api/doors', auth, (req, res) => {
   const t = today();
+  const watched = new Set(
+    db
+      .prepare('SELECT door FROM watched_movies WHERE username=?')
+      .all(req.user.username)
+      .map((row) => row.door),
+  );
   const doors = db
     .prepare('SELECT * FROM doors ORDER BY door')
     .all()
     .map((d) =>
       d.unlock_at <= t
-        ? { ...d, unlocked: true }
+        ? { ...d, unlocked: true, watched: watched.has(d.door) }
         : { door: d.door, unlock_at: d.unlock_at, unlocked: false },
     );
-  res.json({ today: t, doors });
+  res.json({ today: t, doors, ...movieProgress(req.user.username) });
+});
+
+app.patch('/api/doors/:n/watched', auth, (req, res) => {
+  if (!/^\d+$/.test(req.params.n)) {
+    return res.status(400).json({ error: 'Choose a valid movie door' });
+  }
+
+  const doorNumber = Number(req.params.n);
+  const door = db
+    .prepare('SELECT door,unlock_at,title FROM doors WHERE door=?')
+    .get(doorNumber);
+  if (!door || !door.title?.trim()) {
+    return res.status(404).json({ error: 'There is no movie on that door' });
+  }
+  if (door.unlock_at > today()) {
+    return res.status(403).json({ error: 'That movie is not available yet' });
+  }
+
+  const { watched } = req.body || {};
+  if (typeof watched !== 'boolean') {
+    return res.status(400).json({ error: 'Watched must be true or false' });
+  }
+
+  if (watched) {
+    db.prepare(
+      'INSERT OR IGNORE INTO watched_movies(username,door) VALUES(?,?)',
+    ).run(req.user.username, doorNumber);
+  } else {
+    db.prepare('DELETE FROM watched_movies WHERE username=? AND door=?').run(
+      req.user.username,
+      doorNumber,
+    );
+  }
+
+  res.json({ watched, ...movieProgress(req.user.username) });
 });
 
 // ----- admin -----
