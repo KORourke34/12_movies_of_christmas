@@ -108,11 +108,69 @@ function confetti() {
   })();
 }
 
+function safeHttpUrl(value) {
+  try {
+    const url = new URL(value);
+    return url.protocol === 'http:' || url.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
 function movieHTML(d) {
-  // the content of the pop-up (also used for admin preview)
+  // Keep this shared builder safe for both admin previews and friend pop-ups.
+  if (d.isWelcome) {
+    return `<section class="welcome-card">
+      <h2 id="mt">Welcome to 12 Movies of Christmas!</h2>
+      <p>Get ready to count down to Christmas with friends, one festive movie at a time.</p>
+      <h3>How it works</h3>
+      <ul>
+        <li>Open each of the 12 numbered doors when it unlocks to discover that day's movie.</li>
+        <li>Mark a movie as watched in its information card, and track your progress from your profile.</li>
+        <li>Rate how Christmassy each movie is, react with emojis, and share a comment.</li>
+        <li>Some doors may have a Friends' Pick vote. Cast or change your vote before that door opens.</li>
+      </ul>
+      <p>Use your profile button to choose an avatar and view your account details. The settings menu has sound, motion, and theme options. Have fun, and happy watching!</p>
+    </section>`;
+  }
+
+  if (d.vote_open) {
+    return `<section class="vote-card"><h2 id="mt">Friends' pick</h2><p>Choose the movie you want to watch. You can change your vote until this door opens.</p>
+    <form id="vote-form" data-door="${d.door}"><fieldset><legend>Vote for a movie</legend>${d.vote_candidates
+      .map(
+        (candidate, index) => `<label class="vote-choice"><input type="radio" name="candidate" value="${index}" ${d.user_vote === index ? 'checked' : ''} required>${candidate.poster ? `<img src="${esc(candidate.poster)}" alt="">` : ''}<span><b>${esc(candidate.title)}</b>${candidate.year ? ` · ${esc(candidate.year)}` : ''}${candidate.synopsis ? `<small>${esc(candidate.synopsis)}</small>` : ''}</span></label>`,
+      )
+      .join('')}</fieldset><button class="btn">Save vote</button><p class="vote-status" role="status"></p></form></section>`;
+  }
+
+  const trailer = d.trailer && safeHttpUrl(d.trailer)
+    ? `<p><a class="btn trailer-button" href="${esc(d.trailer)}" target="_blank" rel="noopener noreferrer">▶ Watch trailer</a></p>`
+    : '';
+  const watched = d.unlocked && d.title && Number.isInteger(d.door)
+    ? `<label class="watched-control card-watched-control"><input class="watched-toggle" type="checkbox" data-door="${d.door}" ${d.watched ? 'checked' : ''}><span>I've watched this movie</span></label>`
+    : '';
+  const results = d.vote_results
+    ? `<section class="vote-results"><h3>Friends' pick results</h3>${d.vote_results
+        .map((candidate, index) => {
+          const max = Math.max(1, ...d.vote_results.map((item) => item.votes));
+          const winner = index === d.vote_winner;
+          return `<div class="vote-result"><div><b>${esc(candidate.title)}</b><span>${candidate.votes} vote${candidate.votes === 1 ? '' : 's'}${winner ? ' · winner' : ''}</span></div><div class="vote-bar"><i style="width:${Math.round((candidate.votes / max) * 100)}%"></i></div></div>`;
+        })
+        .join('')}</section>`
+    : '';
+  const community = d.unlocked && Number.isInteger(d.door)
+    ? `<section class="movie-community" data-door="${d.door}">
+      <fieldset class="rating-group"><legend>How Christmassy was it?</legend><div class="rating-stars" role="radiogroup" aria-label="Choose a rating from half a star to five stars">${[1, 2, 3, 4, 5]
+        .map((star) => `<span class="rating-star"><span class="rating-star-icon" aria-hidden="true">★</span><label class="rating-half rating-half-left"><input type="radio" name="rating" value="${star - 0.5}" aria-label="${star - 0.5} stars"><span class="sr-only">${star - 0.5} stars</span></label><label class="rating-half rating-half-right"><input type="radio" name="rating" value="${star}" aria-label="${star} ${star === 1 ? 'star' : 'stars'}"><span class="sr-only">${star} ${star === 1 ? 'star' : 'stars'}</span></label></span>`)
+        .join('')}</div><p class="rating-summary" role="status"></p></fieldset>
+      <section><h3>Reactions</h3><div class="reaction-list"></div></section>
+      <section><h3>Comments</h3><form class="comment-form"><label for="movie-comment">Add a comment (140 characters max)</label><textarea id="movie-comment" name="comment" maxlength="140" rows="2" required></textarea><button class="btn">Post comment</button><p class="comment-status" role="status"></p></form><ul class="comment-list"></ul></section>
+    </section>`
+    : '';
+
   return `${d.poster ? `<img class="poster" src="${esc(d.poster)}" alt="Poster for ${esc(d.title)}">` : '<div class="poster none">🎬</div>'}
   <div><h2 id="mt">${esc(d.title || 'Surprise!')}</h2><p class="meta">${[d.year, d.runtime, d.genre].filter(Boolean).map(esc).join(' • ')}</p>
-  <p>${esc(d.synopsis)}</p>${d.watch ? `<p class="watch">📺 Watch on: <b>${esc(d.watch)}</b></p>` : ''}${d.unlocked && d.title && Number.isInteger(d.door) ? `<label class="watched-control card-watched-control"><input class="watched-toggle" type="checkbox" data-door="${d.door}" ${d.watched ? 'checked' : ''}><span>I've watched this movie</span></label>` : ''}</div>`;
+  <p>${esc(d.synopsis)}</p>${d.watch ? `<p class="watch">📺 Watch on: <b>${esc(d.watch)}</b></p>` : ''}${trailer}${watched}${results}${community}</div>`;
 }
 
 let lastFocus;
@@ -126,6 +184,44 @@ function openModal(d) {
 function closeModal() {
   $('#modal').hidden = true;
   lastFocus && lastFocus.focus();
+}
+
+// A small synthesized bell flourish; no external audio asset is needed.
+function playSleighBells() {
+  if (prefs.muted || reduced()) return;
+  const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContextClass) return;
+
+  const context = new AudioContextClass();
+  const now = context.currentTime;
+  [880, 1174.66, 1567.98, 1174.66, 1760].forEach((frequency, index) => {
+    const start = now + index * 0.13;
+    const oscillator = context.createOscillator();
+    const gain = context.createGain();
+    oscillator.type = 'sine';
+    oscillator.frequency.value = frequency;
+    gain.gain.setValueAtTime(0.0001, start);
+    gain.gain.exponentialRampToValueAtTime(0.14, start + 0.015);
+    gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.48);
+    oscillator.connect(gain);
+    gain.connect(context.destination);
+    oscillator.start(start);
+    oscillator.stop(start + 0.5);
+  });
+  setTimeout(() => context.close(), 1200);
+}
+
+const sleighButton = $('#sleigh-trigger');
+const sleigh = $('#sleigh');
+if (sleighButton && sleigh) {
+  sleighButton.onclick = () => {
+    if (reduced() || sleigh.classList.contains('sleigh-flight')) return;
+    sleigh.classList.add('sleigh-flight');
+    playSleighBells();
+  };
+  sleigh.addEventListener('animationend', () => {
+    sleigh.classList.remove('sleigh-flight');
+  });
 }
 
 if ($('#modal')) {
