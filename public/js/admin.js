@@ -1,5 +1,6 @@
 // admin.js – admin login + dashboard (edit doors, preview, reorder, manage friends, backup).
 let doors = [];
+let liveRefresh;
 
 const msg = (t) => {
   $('#msg').textContent = t;
@@ -7,6 +8,8 @@ const msg = (t) => {
 const show = (ok) => {
   $('#login').hidden = ok;
   $('#dash').hidden = !ok;
+  clearInterval(liveRefresh);
+  if (ok) liveRefresh = setInterval(refreshLiveCounts, 15000);
 };
 
 api('/me')
@@ -56,6 +59,30 @@ function render() {
     <label>Synopsis <textarea name="synopsis" rows="3">${esc(d.synopsis)}</textarea></label>
     <label>Poster URL <input name="poster" value="${esc(d.poster)}"></label>
     <label>…or upload a poster <input type="file" accept="image/*" data-act="file"></label>
+    <label>Trailer URL (http or https) <input name="trailer" type="url" value="${esc(d.trailer)}" placeholder="https://…"></label>
+    <p class="rating-admin">Festive rating: <b>${d.rating_average ?? '—'}/5</b> (${d.rating_count} rating${d.rating_count === 1 ? '' : 's'})</p>
+    <fieldset class="vote-admin">
+      <legend>Friends' pick vote door</legend>
+      <label class="inline-check"><input type="checkbox" name="vote_enabled" ${d.vote_enabled ? 'checked' : ''}> Enable voting on this door</label>
+      <label>Voting opens <input type="date" name="vote_open_at" value="${esc(d.vote_open_at)}"></label>
+      <p class="small">Add 2–5 candidate movies. Voting closes automatically when the unlock date arrives.</p>
+      <div class="candidate-fields">${Array.from({ length: 5 }, (_, index) => {
+        const candidate = d.vote_candidates[index] || {};
+        return `<fieldset class="candidate-form"><legend>Candidate ${index + 1}</legend>
+          <label>Title <input name="candidate_title_${index}" value="${esc(candidate.title)}"></label>
+          <label>Year <input name="candidate_year_${index}" value="${esc(candidate.year)}"></label>
+          <label>Poster URL <input name="candidate_poster_${index}" value="${esc(candidate.poster)}"></label>
+          <label>Short synopsis <textarea name="candidate_synopsis_${index}" rows="2">${esc(candidate.synopsis)}</textarea></label>
+        </fieldset>`;
+      }).join('')}</div>
+      <label>Winner on reveal
+        <select name="vote_winner">
+          <option value="">Automatic (most votes; ties go to first)</option>
+          ${d.vote_candidates.map((candidate, index) => `<option value="${index}" ${d.vote_winner === index ? 'selected' : ''}>${esc(candidate.title)} — ${d.vote_counts[index] || 0} votes</option>`).join('')}
+        </select>
+      </label>
+      <p class="vote-live">Live votes: ${d.vote_candidates.map((candidate, index) => `${esc(candidate.title)}: ${d.vote_counts[index] || 0}`).join(' · ') || 'No candidates yet'}</p>
+    </fieldset>
     <div class="row">
       <button class="btn">Save</button>
       <button type="button" class="btn alt" data-act="preview">Preview</button>
@@ -67,7 +94,34 @@ function render() {
     .join('');
 }
 
-const data = (f) => Object.fromEntries(new FormData(f));
+async function refreshLiveCounts() {
+  if (document.hidden || $('#dash').hidden) return;
+  try {
+    const updated = await api('/admin/doors');
+    updated.forEach((door) => {
+      const form = $(`.dform[data-n="${door.door}"]`);
+      if (!form) return;
+      const rating = form.querySelector('.rating-admin');
+      const votes = form.querySelector('.vote-live');
+      rating.textContent = `Festive rating: ${door.rating_average ?? '—'}/5 (${door.rating_count} rating${door.rating_count === 1 ? '' : 's'})`;
+      votes.textContent = `Live votes: ${door.vote_candidates.map((candidate, index) => `${candidate.title}: ${door.vote_counts[index] || 0}`).join(' · ') || 'No candidates yet'}`;
+    });
+  } catch (error) {
+    msg(`Could not refresh ratings and votes: ${error.message}`);
+  }
+}
+
+const data = (f) => {
+  const result = Object.fromEntries(new FormData(f));
+  result.vote_enabled = f.elements.vote_enabled.checked;
+  result.vote_candidates = Array.from({ length: 5 }, (_, index) => ({
+    title: f.elements[`candidate_title_${index}`].value,
+    year: f.elements[`candidate_year_${index}`].value,
+    poster: f.elements[`candidate_poster_${index}`].value,
+    synopsis: f.elements[`candidate_synopsis_${index}`].value,
+  })).filter((candidate) => candidate.title.trim());
+  return result;
+};
 const toData = (file) =>
   new Promise((r) => {
     const i = new Image();
@@ -91,6 +145,7 @@ $('#doors').onsubmit = async (e) => {
       method: 'PUT',
       body: data(f),
     });
+    await load();
     msg('Saved door ' + f.dataset.n);
   } catch (x) {
     msg(x.message);

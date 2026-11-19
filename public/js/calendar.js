@@ -1,4 +1,4 @@
-// calendar.js – builds the 12 doors, handles locked/unlocked clicks and the controls.
+// calendar.js – builds the welcome and movie doors, and handles their controls.
 (async function () {
   let me;
   try {
@@ -101,13 +101,14 @@
     '🎅',
     '🌟',
   ]; // one decoration per door
+  const welcomeDoor = { door: 'welcome', unlocked: true, isWelcome: true };
 
-  $('#grid').innerHTML = doors
+  $('#grid').innerHTML = [welcomeDoor, ...doors]
     .map(
-      (d) => `<div class="slot ${d.unlocked ? '' : 'locked'} ${opened.has(d.door) ? 'open' : ''}">
-    <div class="inside"><span class="movie-title">${d.unlocked ? esc(d.title || '🎬') : '🔒'}</span></div>
-    <button class="door" data-n="${d.door}" aria-label="Door ${d.door}, ${d.unlocked ? 'open' : 'locked'}">
-      <i class="deco">${icons[d.door - 1]}</i><b>${d.door}</b></button></div>`,
+      (d) => `<div class="slot ${d.isWelcome ? 'welcome-slot' : ''} ${d.unlocked ? '' : 'locked'} ${d.vote_open ? 'vote-slot' : ''} ${opened.has(d.door) ? 'open' : ''}">
+    <div class="inside"><span class="movie-title">${d.isWelcome ? '' : d.unlocked ? esc(d.title || '🎬') : d.vote_open ? '🗳️ Vote now!' : ''}</span>${d.unlocked && d.poster ? `<img class="inside-poster" src="${esc(d.poster)}" alt="Poster for ${esc(d.title || 'movie')}">` : ''}</div>
+    <button class="door" data-n="${d.door}" aria-label="${d.isWelcome ? 'Open the welcome guide' : `Door ${d.door}, ${d.vote_open ? 'vote now' : d.unlocked ? 'open' : 'locked'}`}">
+      <i class="deco">${d.isWelcome ? '🎁' : d.vote_open ? '🗳️' : icons[d.door - 1]}</i><b>${d.isWelcome ? '★' : d.door}</b>${d.isWelcome ? '<span class="welcome-door-label">Welcome!</span>' : ''}</button></div>`,
     )
     .join('');
 
@@ -145,12 +146,40 @@
     const btn = e.target.closest('.door');
     if (!btn) {
       const slot = e.target.closest('.slot.open');
-      if (slot) openModal(doors[slot.querySelector('.door').dataset.n - 1]);
+      if (slot) {
+        const doorButton = slot.querySelector('.door');
+        if (doorButton.dataset.n === 'welcome') {
+          activeDoor = null;
+          openModal({ isWelcome: true, title: 'Welcome!' });
+        } else {
+          const door = doors.find((item) => item.door === Number(doorButton.dataset.n));
+          if (door) openDoorModal(door);
+        }
+      }
       return;
     }
 
     const slot = btn.parentNode;
-    const d = doors[btn.dataset.n - 1];
+    if (btn.dataset.n === 'welcome') {
+      const first = !opened.has('welcome');
+      slot.classList.add('open');
+      if (first) {
+        opened.add('welcome');
+        localStorage.setItem(key, JSON.stringify([...opened]));
+        sfx.open();
+        confetti();
+      }
+      activeDoor = null;
+      setTimeout(() => openModal({ isWelcome: true, title: 'Welcome!' }), first && !reduced() ? 750 : 0);
+      return;
+    }
+
+    const d = doors.find((item) => item.door === Number(btn.dataset.n));
+    if (!d) return;
+    if (d.vote_open) {
+      openDoorModal(d);
+      return;
+    }
     if (!d.unlocked) {
       slot.classList.remove('shake');
       void slot.offsetWidth;
@@ -167,8 +196,199 @@
       sfx.open();
       confetti();
     }
-    setTimeout(() => openModal(d), first && !reduced() ? 750 : 0);
+    setTimeout(() => openDoorModal(d), first && !reduced() ? 750 : 0);
   };
+
+  let activeDoor;
+  const openDoorModal = (door) => {
+    activeDoor = door;
+    openModal(door);
+    if (door.unlocked && door.title) loadCommunity(door);
+  };
+
+  const renderCommunity = (community) => {
+    const root = $('#mbody .movie-community');
+    if (!root) return;
+    root.querySelectorAll('input[name="rating"]').forEach((input) => {
+      input.checked = Number(input.value) === Number(community.rating);
+    });
+    setRatingStars(root.querySelector('.rating-stars'), community.rating);
+    root.querySelector('.rating-summary').textContent =
+      community.ratingCount
+        ? `Friends' average: ${community.ratingAverage}/5 (${community.ratingCount} rating${community.ratingCount === 1 ? '' : 's'})`
+        : 'No ratings yet.';
+    root.querySelector('.reaction-list').innerHTML = community.reactions
+      .map(
+        (reaction) => `<button type="button" class="reaction-button ${reaction.reacted ? 'selected' : ''}" data-emoji="${reaction.emoji}" aria-pressed="${reaction.reacted}">${reaction.emoji} <span>${reaction.count}</span></button>`,
+      )
+      .join('');
+    root.querySelector('.comment-list').innerHTML = community.comments
+      .map((comment) => {
+        const time = new Date(`${comment.created_at.replace(' ', 'T')}Z`);
+        const timeText = Number.isNaN(time.valueOf())
+          ? comment.created_at
+          : time.toLocaleString();
+        const canDelete = community.admin || comment.username === me.username;
+        return `<li class="comment-item"><div><b>${esc(comment.author)}</b> <time>${esc(timeText)}</time></div><p>${esc(comment.comment)}</p>${canDelete ? `<button type="button" class="comment-delete" data-comment="${comment.id}">Delete</button>` : ''}</li>`;
+      })
+      .join('');
+  };
+
+  const setRatingStars = (stars, value) => {
+    if (!stars) return;
+    const rating = Number(value) || 0;
+    stars.dataset.rating = String(rating);
+    stars.querySelectorAll('.rating-star').forEach((star, index) => {
+      const fill = Math.max(0, Math.min(1, rating - index)) * 100;
+      star.querySelector('.rating-star-icon').style.setProperty('--star-fill', `${fill}%`);
+    });
+  };
+
+  const loadCommunity = async (door) => {
+    try {
+      const community = await api(`/doors/${door.door}/community`);
+      if (activeDoor?.door === door.door && !$('#modal').hidden) {
+        renderCommunity(community);
+      }
+    } catch (error) {
+      if (activeDoor?.door === door.door) {
+        const status = $('#mbody .comment-status');
+        if (status) status.textContent = error.message;
+      }
+    }
+  };
+
+  const showActionMessage = (selector, message) => {
+    const status = $(selector);
+    if (status) status.textContent = message;
+  };
+
+  $('#modal').addEventListener('change', async (event) => {
+    const input = event.target;
+    if (input.matches('.watched-toggle')) return updateWatched(event);
+    if (input.name !== 'rating' || !activeDoor) return;
+    const stars = input.closest('.rating-stars');
+    setRatingStars(stars, Number(input.value));
+    try {
+      const result = await api(`/doors/${activeDoor.door}/rating`, {
+        method: 'PUT',
+        body: { stars: Number(input.value) },
+      });
+      showActionMessage(
+        '.rating-summary',
+        `Friends' average: ${result.average}/5 (${result.count} rating${result.count === 1 ? '' : 's'})`,
+      );
+    } catch (error) {
+      if (activeDoor) loadCommunity(activeDoor);
+      showActionMessage('.rating-summary', error.message);
+    }
+  });
+
+  $('#modal').addEventListener('pointerover', (event) => {
+    const option = event.target.closest('.rating-half');
+    if (option) setRatingStars(option.closest('.rating-stars'), Number(option.querySelector('input').value));
+  });
+
+  $('#modal').addEventListener('pointerout', (event) => {
+    const stars = event.target.closest('.rating-stars');
+    if (stars && !stars.contains(event.relatedTarget)) {
+      setRatingStars(stars, Number(stars.dataset.rating));
+    }
+  });
+
+  $('#modal').addEventListener('focusin', (event) => {
+    const input = event.target.closest('input[name="rating"]');
+    if (input) setRatingStars(input.closest('.rating-stars'), Number(input.value));
+  });
+
+  $('#modal').addEventListener('focusout', (event) => {
+    const stars = event.target.closest('.rating-stars');
+    if (stars && !stars.contains(event.relatedTarget)) {
+      setRatingStars(stars, Number(stars.dataset.rating));
+    }
+  });
+
+  $('#modal').addEventListener('click', async (event) => {
+    const reaction = event.target.closest('.reaction-button');
+    if (reaction && activeDoor) {
+      reaction.disabled = true;
+      try {
+        const result = await api(`/doors/${activeDoor.door}/reactions`, {
+          method: 'POST',
+          body: { emoji: reaction.dataset.emoji },
+        });
+        const community = await api(`/doors/${activeDoor.door}/community`);
+        renderCommunity({ ...community, reactions: result.reactions });
+      } catch (error) {
+        showActionMessage('.comment-status', error.message);
+      }
+      return;
+    }
+
+    const remove = event.target.closest('.comment-delete');
+    if (remove && activeDoor) {
+      remove.disabled = true;
+      try {
+        await api(
+          `/doors/${activeDoor.door}/comments/${remove.dataset.comment}`,
+          { method: 'DELETE' },
+        );
+        await loadCommunity(activeDoor);
+      } catch (error) {
+        remove.disabled = false;
+        showActionMessage('.comment-status', error.message);
+      }
+    }
+  });
+
+  $('#modal').addEventListener('submit', async (event) => {
+    const voteForm = event.target.closest('#vote-form');
+    const commentForm = event.target.closest('.comment-form');
+    if (!voteForm && !commentForm) return;
+    event.preventDefault();
+
+    if (voteForm) {
+      const candidate = new FormData(voteForm).get('candidate');
+      const status = voteForm.querySelector('.vote-status');
+      if (candidate === null) {
+        status.textContent = 'Choose a movie first.';
+        return;
+      }
+      const button = voteForm.querySelector('button');
+      button.disabled = true;
+      try {
+        await api(`/doors/${activeDoor.door}/vote`, {
+          method: 'POST',
+          body: { candidate: Number(candidate) },
+        });
+        activeDoor.user_vote = Number(candidate);
+        status.textContent = 'Your vote is saved. You can change it until the door opens.';
+      } catch (error) {
+        status.textContent = error.message;
+      } finally {
+        button.disabled = false;
+      }
+    }
+
+    if (commentForm) {
+      const field = commentForm.elements.comment;
+      const button = commentForm.querySelector('button');
+      button.disabled = true;
+      try {
+        await api(`/doors/${activeDoor.door}/comments`, {
+          method: 'POST',
+          body: { comment: field.value },
+        });
+        field.value = '';
+        showActionMessage('.comment-status', 'Comment posted.');
+        await loadCommunity(activeDoor);
+      } catch (error) {
+        showActionMessage('.comment-status', error.message);
+      } finally {
+        button.disabled = false;
+      }
+    }
+  });
 
   let noticeTimer;
   const updateWatched = async (event) => {
