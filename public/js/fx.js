@@ -12,7 +12,19 @@ const esc = (s) =>
         "'": '&#39;',
       })[c],
   );
-const prefs = JSON.parse(localStorage.getItem('prefs') || '{}'); // remembered sound/motion/theme choices
+const readStored = (key, fallback) => {
+  try {
+    const value = JSON.parse(localStorage.getItem(key) || 'null');
+    return value ?? fallback;
+  } catch {
+    return fallback;
+  }
+};
+const storedPrefs = readStored('prefs', {});
+const prefs =
+  storedPrefs && typeof storedPrefs === 'object' && !Array.isArray(storedPrefs)
+    ? storedPrefs
+    : {};
 const savePrefs = () =>
   localStorage.setItem('prefs', JSON.stringify(prefs));
 const reduced = () =>
