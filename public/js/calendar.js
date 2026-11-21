@@ -6,6 +6,7 @@
   } catch {
     return (location.href = '/');
   }
+  if (me.mustChange) return (location.href = 'password.html');
 
   $('#hello').textContent = 'Hi ' + me.name + '!';
   $('#profile-name').textContent = me.name;

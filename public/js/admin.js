@@ -225,13 +225,21 @@ async function users() {
         `<li>${esc(x.name)}${
           x.admin
             ? ' (admin)'
-            : ` <button class="btn alt" data-u="${esc(x.username)}">Remove</button>`
+            : ` <span class="small">${esc(x.email || 'No email set')}</span>
+               <button class="btn alt" type="button" data-email="${esc(x.username)}" data-current-email="${esc(x.email || '')}">Set email</button>
+               <button class="btn alt" type="button" data-reset="${esc(x.username)}">Reset password</button>
+               <button class="btn alt" type="button" data-u="${esc(x.username)}">Remove</button>`
         }</li>`,
     )
     .join('');
 }
 
 $('#users').onclick = async (e) => {
+  const emailUsername = e.target.dataset.email;
+  if (emailUsername) return openEmailModal(emailUsername, e.target.dataset.currentEmail);
+  const resetUsername = e.target.dataset.reset;
+  if (resetUsername) return openPasswordReset(resetUsername);
+
   const u = e.target.dataset.u;
   if (u && confirm('Remove ' + u + '?')) {
     await api('/admin/users/' + encodeURIComponent(u), { method: 'DELETE' });
@@ -239,12 +247,159 @@ $('#users').onclick = async (e) => {
   }
 };
 
+const randomWord = (words) => {
+  const index = crypto.getRandomValues(new Uint32Array(1))[0] % words.length;
+  return words[index];
+};
+
+const generateMemorablePassword = () => {
+  const adjectives = ['Bright', 'Cozy', 'Happy', 'Snowy', 'Jolly', 'Festive'];
+  const nouns = ['Pine', 'Santa', 'Reindeer', 'Candle', 'Star', 'Cookie'];
+  const number = crypto.getRandomValues(new Uint32Array(1))[0] % 900 + 100;
+  return `${randomWord(adjectives)}${randomWord(nouns)}${number}`;
+};
+
+function openEmailModal(username, currentEmail) {
+  $('#mbody').innerHTML = `
+    <h2>Set email for ${esc(username)}</h2>
+    <p>This email will receive password reset links.</p>
+    <form id="friend-email-form">
+      <label for="friend-email">
+        Email address
+        <input
+          id="friend-email"
+          type="email"
+          maxlength="254"
+          autocomplete="email"
+          value="${esc(currentEmail)}"
+          required
+        >
+      </label>
+      <button class="btn" type="submit">Save email</button>
+      <p id="friend-email-status" role="status"></p>
+      <p id="friend-email-error" class="err" role="alert"></p>
+    </form>`;
+  $('#modal').hidden = false;
+
+  $('#friend-email-form').onsubmit = async (event) => {
+    event.preventDefault();
+    $('#friend-email-status').textContent = '';
+    $('#friend-email-error').textContent = '';
+    try {
+      await api('/admin/users/' + encodeURIComponent(username) + '/email', {
+        method: 'PUT',
+        body: { email: $('#friend-email').value },
+      });
+      $('#friend-email-status').textContent = `Email saved for ${username}.`;
+      users();
+      setTimeout(closeModal, 900);
+    } catch (error) {
+      $('#friend-email-error').textContent = error.message;
+    }
+  };
+}
+
+function openPasswordReset(username) {
+  $('#mbody').innerHTML = `
+    <h2>Reset ${esc(username)}'s password</h2>
+    <p>The friend will be signed out and required to choose a new password next.</p>
+    <form id="reset-password-form">
+      <label for="reset-password">
+        New password
+        <input
+          id="reset-password"
+          type="password"
+          minlength="8"
+          maxlength="72"
+          autocomplete="new-password"
+          required
+        >
+      </label>
+      <label for="reset-password-confirm">
+        Confirm password
+        <input
+          id="reset-password-confirm"
+          type="password"
+          minlength="8"
+          maxlength="72"
+          autocomplete="new-password"
+          required
+        >
+      </label>
+      <div class="row">
+        <button id="generate-password" class="btn alt" type="button">Generate one</button>
+        <button id="copy-password" class="btn alt" type="button">Copy</button>
+      </div>
+      <button class="btn" type="submit">Reset password</button>
+      <p id="reset-password-status" role="status"></p>
+      <p id="reset-password-error" class="err" role="alert"></p>
+    </form>`;
+  $('#modal').hidden = false;
+
+  $('#generate-password').onclick = () => {
+    const password = generateMemorablePassword();
+    $('#reset-password').value = password;
+    $('#reset-password-confirm').value = password;
+    $('#reset-password-status').textContent = 'Password generated.';
+  };
+
+  $('#copy-password').onclick = async () => {
+    const password = $('#reset-password').value;
+    if (!password) {
+      $('#reset-password-error').textContent = 'Generate or enter a password first.';
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(password);
+      $('#reset-password-status').textContent = 'Password copied.';
+    } catch {
+      $('#reset-password-error').textContent = 'Could not copy the password.';
+    }
+  };
+
+  $('#reset-password-form').onsubmit = async (event) => {
+    event.preventDefault();
+    const password = $('#reset-password').value;
+    const confirmation = $('#reset-password-confirm').value;
+    $('#reset-password-status').textContent = '';
+    $('#reset-password-error').textContent = '';
+
+    if (password !== confirmation) {
+      $('#reset-password-error').textContent = 'Passwords do not match.';
+      return;
+    }
+
+    try {
+      await api('/admin/users/' + encodeURIComponent(username) + '/password', {
+        method: 'POST',
+        body: { password },
+      });
+      $('#reset-password-status').textContent = `Password reset for ${username}.`;
+      users();
+      setTimeout(closeModal, 900);
+    } catch (error) {
+      $('#reset-password-error').textContent = error.message;
+    }
+  };
+}
+
+function closeModal() {
+  $('#modal').hidden = true;
+  $('#mbody').innerHTML = '';
+}
+
+$('#close').onclick = closeModal;
+
 $('#uf').onsubmit = async (e) => {
   e.preventDefault();
   try {
     await api('/admin/users', {
       method: 'POST',
-      body: { username: $('#nu').value, password: $('#np').value },
+      body: {
+        username: $('#nu').value,
+        password: $('#np').value,
+        email: $('#ne').value,
+      },
     });
     e.target.reset();
     users();

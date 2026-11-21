@@ -74,6 +74,10 @@ model users {
   name            String?
   hash            String
   admin           Int               @default(0)
+  mustChange      Boolean           @default(false)
+  tokenVersion    Int               @default(0)
+  resetTokenHash  String?
+  resetTokenExpires DateTime?
   first_name      String?
   last_name       String?
   email           String?           @unique(map: "users_email_unique")

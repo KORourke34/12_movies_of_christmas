@@ -15,9 +15,14 @@ reverse proxy such as Caddy or nginx). Configure these environment variables:
 | `ADMIN_USER` | Yes | Initial or bootstrap administrator username (3–32 letters, numbers, dots, underscores or hyphens). |
 | `ADMIN_PASS` | Yes | Initial or bootstrap administrator password (12+ characters, no more than 72 UTF-8 bytes). |
 | `DB_PATH` | Yes for hosted deployments | Absolute path to a SQLite file on persistent, writable storage. |
+| `DATABASE_URL` | Yes for Prisma CLI deploys | SQLite Prisma URL, for example `file:/absolute/path/advent.db`. |
 | `PORT` | Usually provided by the host | Port for the HTTP server. |
 | `TRUST_PROXY_HOPS` | Only behind a proxy | Number of trusted proxy hops, such as `1` for one reverse proxy. Keep the app port inaccessible except through that proxy. |
 | `REGISTRATION_ENABLED` | No | Public sign-up is disabled by default in production. Set to `true` to allow it; admins can always add accounts. In development, sign-up is enabled unless set to `false`. |
+| `APP_BASE_URL` | Yes for email reset | Public HTTPS base URL, for example `https://movies.example.com`. |
+| `BREVO_API_KEY` | Yes for email reset | Brevo API key kept in the host's secret settings. |
+| `BREVO_SENDER_EMAIL` | Yes for email reset | Verified Brevo sender email address. |
+| `BREVO_SENDER_NAME` | No | Email sender name; defaults to `12 Movies of Christmas`. |
 
 Generate a signing secret with a cryptographically secure random generator, for
 example `openssl rand -hex 32`. Do not commit secrets or `.env` files. The app
@@ -51,6 +56,41 @@ account from the public registration page.
 npm install
 npm start
 ```
+
+After pulling password-reset changes locally, apply migrations and generate the
+Prisma client:
+
+```sh
+npx prisma migrate dev
+npx prisma generate
+npm start
+```
+
+The existing SQLite data is preserved. The migration adds `mustChange` and
+`tokenVersion` to friend accounts with safe defaults.
+
+Create a local `.env` from the template:
+
+```sh
+cp .env.example .env
+```
+
+Then set `BREVO_API_KEY` and `BREVO_SENDER_EMAIL`. The sender email must be
+verified in Brevo. Keep `.env` untracked; it is already excluded by `.gitignore`.
+
+## Production migrations
+
+Run migrations after installing dependencies and before starting the application:
+
+```sh
+npx prisma migrate deploy
+npm start
+```
+
+For a build-and-start hosting platform, add `npx prisma migrate deploy` to the
+release or deploy command, before the start command. Use the existing persistent
+`DB_PATH` database and configure `DATABASE_URL`/Prisma's SQLite datasource when
+the host requires it.
 
 Without production environment variables, the app generates an ephemeral
 development signing secret at startup. Existing development sessions therefore

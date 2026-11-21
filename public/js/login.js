@@ -5,11 +5,11 @@ api('/me')
 $('#lf').onsubmit = async (event) => {
   event.preventDefault();
   try {
-    await api('/login', {
+    const login = await api('/login', {
       method: 'POST',
       body: { username: $('#u').value, password: $('#p').value },
     });
-    location.href = 'calendar.html';
+    location.href = login.mustChange ? 'password.html' : 'calendar.html';
   } catch (error) {
     $('#err').textContent = error.message;
   }
