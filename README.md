@@ -1,6 +1,6 @@
 # 12 Movies of Christmas
 
-A small Express and SQLite app for a private movie calendar with friend accounts,
+A small Express and Prisma/SQLite app for a private movie calendar with friend accounts,
 ratings, comments, reactions and Friends' Pick voting.
 
 ## Production setup
