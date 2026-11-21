@@ -1,9 +1,11 @@
 // server.js – Express + SQLite backend. Movie details for a door are only
 // sent to the browser once its unlock date has arrived (so no peeking!).
+require('dotenv').config();
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const cookieParser = require('cookie-parser');
+const rateLimit = require('express-rate-limit');
 const path = require('path');
 const crypto = require('crypto');
 const cfg = require('./config');
@@ -18,11 +20,22 @@ const production = process.env.NODE_ENV === 'production';
 const registrationEnabled = production
   ? process.env.REGISTRATION_ENABLED === 'true'
   : process.env.REGISTRATION_ENABLED !== 'false';
-const SECRET = process.env.SECRET || crypto.randomBytes(32).toString('hex');
+if (production && !process.env.SECRET) {
+  throw new Error('Production requires a SECRET environment variable');
+}
+const SECRET = production
+  ? process.env.SECRET
+  : (process.env.SECRET || crypto.randomBytes(32).toString('hex'));
 const validPassword = (password) =>
   typeof password === 'string' &&
   [...password].length >= 12 &&
   Buffer.byteLength(password, 'utf8') <= 72;
+const validNewPassword = (password) =>
+  typeof password === 'string' &&
+  [...password].length >= 8 &&
+  Buffer.byteLength(password, 'utf8') <= 72;
+const hashResetToken = (token) =>
+  crypto.createHash('sha256').update(token).digest('hex');
 if (production && (!process.env.SECRET || Buffer.byteLength(SECRET, 'utf8') < 32)) {
   throw new Error('Production requires a SECRET of at least 32 bytes');
 }
@@ -64,9 +77,15 @@ const AVATARS = new Set([
 
 
 async function bootstrap() {
-  await prisma.$executeRawUnsafe(
-    'CREATE UNIQUE INDEX IF NOT EXISTS users_email_unique ON users(email)',
-  );
+  if (
+    !process.env.BREVO_API_KEY ||
+    !process.env.BREVO_SENDER_EMAIL ||
+    !process.env.APP_BASE_URL
+  ) {
+    console.warn(
+      'Password-reset email is not fully configured: set APP_BASE_URL, BREVO_API_KEY, and BREVO_SENDER_EMAIL.',
+    );
+  }
   await Promise.all(
     cfg.dates.map((unlockAt, index) =>
       prisma.doors.upsert({
@@ -78,20 +97,40 @@ async function bootstrap() {
   );
 
   if (process.env.ADMIN_USER && process.env.ADMIN_PASS) {
+    // Admins are bootstrapped only from these environment variables.
+    // Change the admin password by updating ADMIN_PASS in the host environment
+    // and restarting; do not expose a password reset route for admin accounts.
     const adminUsername = process.env.ADMIN_USER.trim().toLowerCase();
     if (!/^[a-z0-9._-]{3,32}$/.test(adminUsername)) {
       throw new Error('ADMIN_USER must be 3 to 32 letters, numbers, dots, underscores or hyphens');
     }
-    await prisma.users.upsert({
+    const existingAdmin = await prisma.users.findUnique({
       where: { username: adminUsername },
-      update: { hash: bcrypt.hashSync(process.env.ADMIN_PASS, 12), admin: 1 },
-      create: {
+    });
+    const nextHash = bcrypt.hashSync(process.env.ADMIN_PASS, 12);
+    if (existingAdmin) {
+      const passwordChanged = !bcrypt.compareSync(
+        process.env.ADMIN_PASS,
+        existingAdmin.hash,
+      );
+      await prisma.users.update({
+        where: { username: adminUsername },
+        data: passwordChanged
+          ? { hash: nextHash, admin: 1, tokenVersion: { increment: 1 } }
+          : { admin: 1 },
+      });
+    } else {
+      await prisma.users.create({
+        data: {
         username: adminUsername,
         name: process.env.ADMIN_USER.trim(),
-        hash: bcrypt.hashSync(process.env.ADMIN_PASS, 12),
+        hash: nextHash,
         admin: 1,
-      },
-    });
+        mustChange: false,
+        tokenVersion: 0,
+        },
+      });
+    }
   }
 }
 
@@ -111,43 +150,26 @@ app.use((req, res, next) => {
 });
 app.use(express.json({ limit: '8mb' }), cookieParser());
 
-const createRateLimiter = ({ windowMs, max, message }) => {
-  const attempts = new Map();
-  const cleanup = setInterval(() => {
-    const now = Date.now();
-    for (const [ip, attempt] of attempts) {
-      if (attempt.resetAt <= now) attempts.delete(ip);
-    }
-  }, Math.min(windowMs, 60_000));
-  cleanup.unref();
-
-  return (req, res, next) => {
-    const now = Date.now();
-    let attempt = attempts.get(req.ip);
-    if (!attempt || attempt.resetAt <= now) {
-      if (!attempt && attempts.size >= 10_000) {
-        attempts.delete(attempts.keys().next().value);
-      }
-      attempt = { count: 0, resetAt: now + windowMs };
-      attempts.set(req.ip, attempt);
-    }
-    if (attempt.count >= max) {
-      res.set('Retry-After', Math.ceil((attempt.resetAt - now) / 1000));
-      return res.status(429).json({ error: message });
-    }
-    attempt.count += 1;
-    next();
-  };
-};
-const loginRateLimit = createRateLimiter({
+const loginRateLimit = rateLimit({
   windowMs: 15 * 60_000,
-  max: 20,
-  message: 'Too many login attempts. Please try again later.',
+  limit: 10,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: { error: 'Too many login attempts. Please try again later.' },
 });
-const registrationRateLimit = createRateLimiter({
+const passwordRateLimit = rateLimit({
+  windowMs: 15 * 60_000,
+  limit: 10,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: { error: 'Too many password attempts. Please try again later.' },
+});
+const registrationRateLimit = rateLimit({
   windowMs: 60 * 60_000,
-  max: 10,
-  message: 'Too many account creation attempts. Please try again later.',
+  limit: 10,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: { error: 'Too many account creation attempts. Please try again later.' },
 });
 
 const today = () => {
@@ -190,11 +212,19 @@ const doorExistsAndUnlocked = async (doorNumber) => {
   return door && door.unlock_at <= today() ? door : null;
 };
 const ratingSummary = async (doorNumber) => {
-  const [aggregate] = await prisma.$queryRawUnsafe(
-    'SELECT ROUND(AVG(stars_half) / 2.0, 1) AS average, COUNT(*) AS count FROM movie_ratings WHERE door=?',
-    doorNumber,
-  );
-  return aggregate;
+  const ratings = await prisma.movie_ratings.findMany({
+    where: { door: doorNumber },
+    select: { stars_half: true },
+  });
+  if (!ratings.length) return { average: null, count: 0 };
+  const average =
+    Math.round(
+      (ratings.reduce((sum, rating) => sum + rating.stars_half, 0) /
+        ratings.length /
+        2) *
+        10,
+    ) / 10;
+  return { average, count: ratings.length };
 };
 const voteTally = async (doorNumber, candidates) => {
   const counts = await Promise.all(
@@ -236,23 +266,58 @@ const auth = async (req, res, next) => {
 
   const currentUser = await prisma.users.findUnique({
     where: { username },
-    select: { username: true, admin: true },
+    select: {
+      username: true,
+      name: true,
+      admin: true,
+      mustChange: true,
+      tokenVersion: true,
+    },
   });
   if (!currentUser) return res.status(401).json({ error: 'Please log in again' });
+  if (
+    typeof claims.tokenVersion !== 'number' ||
+    claims.tokenVersion !== currentUser.tokenVersion
+  ) {
+    res.clearCookie('t');
+    return res.status(401).json({ error: 'Please log in again' });
+  }
 
-  req.user = { ...claims, username: currentUser.username, admin: !!currentUser.admin };
+  req.user = {
+    ...claims,
+    username: currentUser.username,
+    name: currentUser.name,
+    admin: !!currentUser.admin,
+    mustChange: currentUser.mustChange,
+    tokenVersion: currentUser.tokenVersion,
+  };
   next();
 };
 const admin = (req, res, next) =>
   req.user.admin ? next() : res.status(403).json({ error: 'Admins only' });
+const passwordChangeCompleted = (req, res, next) =>
+  req.user.mustChange
+    ? res.status(403).json({
+        error: 'Choose a new password before using the calendar',
+        mustChange: true,
+      })
+    : next();
 
 // ----- login / logout -----
 const setSession = (res, u) => {
   res.cookie(
     't',
-    jwt.sign({ username: u.username, name: u.name, admin: !!u.admin }, SECRET, {
-      expiresIn: '30d',
-    }),
+    jwt.sign(
+      {
+        username: u.username,
+        name: u.name,
+        admin: !!u.admin,
+        tokenVersion: u.tokenVersion ?? 0,
+        mustChange: !!u.mustChange,
+      },
+      SECRET,
+      { expiresIn: '30d' },
+    ),
     {
       httpOnly: true,
       sameSite: 'lax',
@@ -279,7 +344,11 @@ app.post('/api/login', loginRateLimit, async (req, res) => {
   }
 
   setSession(res, u);
-  res.json({ name: u.name, admin: !!u.admin });
+  res.json({
+    name: u.name,
+    admin: !!u.admin,
+    mustChange: u.mustChange,
+  });
 });
 
 app.post('/api/register', registrationRateLimit, async (req, res) => {
@@ -343,18 +412,219 @@ app.post('/api/register', registrationRateLimit, async (req, res) => {
 });
 
 app.post('/api/logout', (req, res) => res.clearCookie('t').json({ ok: true }));
+app.get('/api/password/status', auth, async (req, res) => {
+  res.json({
+    mustChange: req.user.mustChange,
+    name: req.user.name,
+  });
+});
+
+app.post('/api/password/change', passwordRateLimit, auth, async (req, res) => {
+  const body = req.body || {};
+  const currentPassword =
+    typeof body.currentPassword === 'string' ? body.currentPassword : '';
+  const newPassword =
+    typeof body.newPassword === 'string' ? body.newPassword : '';
+  const confirmPassword =
+    typeof body.confirmPassword === 'string' ? body.confirmPassword : '';
+
+  if (
+    !validNewPassword(newPassword) ||
+    Buffer.byteLength(newPassword, 'utf8') > 72
+  ) {
+    return res.status(400).json({
+      error: 'New password must be at least 8 characters and no more than 72 bytes',
+    });
+  }
+  if (newPassword !== confirmPassword) {
+    return res.status(400).json({ error: 'New passwords do not match' });
+  }
+
+  const user = await prisma.users.findUnique({
+    where: { username: req.user.username },
+  });
+  if (!user || !bcrypt.compareSync(currentPassword, user.hash)) {
+    return res.status(400).json({ error: 'Current password is incorrect' });
+  }
+  if (bcrypt.compareSync(newPassword, user.hash) || newPassword === currentPassword) {
+    return res.status(400).json({
+      error: 'New password must be different from the current password',
+    });
+  }
+
+  const updated = await prisma.users.update({
+    where: { username: user.username },
+    data: {
+      hash: bcrypt.hashSync(newPassword, 12),
+      mustChange: false,
+      tokenVersion: { increment: 1 },
+    },
+  });
+
+  setSession(res, updated);
+  res.json({ ok: true, name: updated.name, mustChange: false });
+});
+
+app.post('/api/password/forgot', passwordRateLimit, async (req, res) => {
+  const email =
+    typeof req.body?.email === 'string'
+      ? req.body.email.trim().toLowerCase()
+      : '';
+
+  // Always return the same response to avoid revealing whether an email exists.
+  const genericMessage =
+    'If that email is registered, a password reset link has been sent.';
+
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) {
+    return res.json({ ok: true, message: genericMessage });
+  }
+
+  const user = await prisma.users.findFirst({
+    where: { email: email, admin: 0 },
+  });
+  if (!user) return res.json({ ok: true, message: genericMessage });
+
+  const resetToken = crypto.randomBytes(32).toString('hex');
+  await prisma.users.update({
+    where: { username: user.username },
+    data: {
+      resetTokenHash: hashResetToken(resetToken),
+      resetTokenExpires: new Date(Date.now() + 30 * 60_000),
+    },
+  });
+
+  const apiKey = process.env.BREVO_API_KEY;
+  const senderEmail = process.env.BREVO_SENDER_EMAIL;
+  if (!apiKey || !senderEmail) {
+    console.error('Password reset email is not configured');
+    return res.json({ ok: true, message: genericMessage });
+  }
+
+  const baseUrl = (process.env.APP_BASE_URL || '').replace(/\/$/, '');
+  if (!baseUrl) {
+    console.error('APP_BASE_URL is not configured');
+    return res.json({ ok: true, message: genericMessage });
+  }
+
+  const resetUrl =
+    `${baseUrl}/reset-password.html?token=${encodeURIComponent(resetToken)}`;
+  try {
+    const response = await fetch('https://api.brevo.com/v3/smtp/email', {
+      method: 'POST',
+      headers: {
+        'api-key': apiKey,
+        'content-type': 'application/json',
+        accept: 'application/json',
+      },
+      body: JSON.stringify({
+        sender: {
+          email: senderEmail,
+          name: process.env.BREVO_SENDER_NAME || '12 Movies of Christmas',
+        },
+        to: [{ email: user.email, name: user.name || user.username }],
+        subject: 'Reset your 12 Movies of Christmas password',
+        htmlContent:
+          `<p>Use this link to reset your password:</p>` +
+          `<p><a href="${resetUrl}">Reset password</a></p>` +
+          `<p>This link expires in 30 minutes.</p>`,
+      }),
+    });
+    if (!response.ok) {
+      console.error('Brevo password reset request failed');
+      await prisma.users.update({
+        where: { username: user.username },
+        data: { resetTokenHash: null, resetTokenExpires: null },
+      });
+    }
+  } catch {
+    console.error('Could not send password reset email');
+  }
+
+  return res.json({ ok: true, message: genericMessage });
+});
+
+app.post('/api/password/reset', passwordRateLimit, async (req, res) => {
+  const token =
+    typeof req.body?.token === 'string' ? req.body.token.trim() : '';
+  const newPassword =
+    typeof req.body?.newPassword === 'string' ? req.body.newPassword : '';
+  const confirmPassword =
+    typeof req.body?.confirmPassword === 'string'
+      ? req.body.confirmPassword
+      : '';
+
+  if (!/^[a-f0-9]{64}$/i.test(token)) {
+    return res.status(400).json({ error: 'This reset link is invalid or has expired' });
+  }
+  if (!validNewPassword(newPassword)) {
+    return res.status(400).json({
+      error: 'New password must be at least 8 characters and no more than 72 bytes',
+    });
+  }
+  if (newPassword !== confirmPassword) {
+    return res.status(400).json({ error: 'New passwords do not match' });
+  }
+
+  const tokenHash = hashResetToken(token);
+  const user = await prisma.users.findFirst({
+    where: {
+      resetTokenHash: tokenHash,
+      resetTokenExpires: { gt: new Date() },
+    },
+  });
+  if (!user) {
+    return res.status(400).json({
+      error: 'This reset link is invalid or has expired',
+    });
+  }
+  if (bcrypt.compareSync(newPassword, user.hash)) {
+    return res.status(400).json({
+      error: 'New password must be different from the current password',
+    });
+  }
+
+  await prisma.users.update({
+    where: { username: user.username },
+    data: {
+      hash: bcrypt.hashSync(newPassword, 12),
+      mustChange: false,
+      tokenVersion: { increment: 1 },
+      resetTokenHash: null,
+      resetTokenExpires: null,
+    },
+  });
+
+  res.clearCookie('t');
+  res.json({
+    ok: true,
+    message: 'Password changed. You can now log in.',
+  });
+});
+
 const movieProgress = async (username) => {
-  const [progress] = await prisma.$queryRawUnsafe(
-    `SELECT COUNT(d.door) AS movieCount, COUNT(w.door) AS watchedCount
-     FROM doors d
-     LEFT JOIN watched_movies w ON w.door=d.door AND w.username=?
-     WHERE (d.vote_enabled=0 AND trim(COALESCE(d.title, '')) <> '')
-       OR (d.vote_enabled=1 AND d.unlock_at<=?)`,
-    username,
-    today(),
+  const doors = await prisma.doors.findMany({
+    select: {
+      door: true,
+      title: true,
+      unlock_at: true,
+      vote_enabled: true,
+    },
+  });
+  const currentDay = today();
+  const countedDoors = doors.filter(
+    (door) =>
+      (door.vote_enabled === 0 && !!door.title?.trim()) ||
+      (door.vote_enabled === 1 && door.unlock_at <= currentDay),
   );
-  const movieCount = Number(progress.movieCount);
-  const watchedCount = Number(progress.watchedCount);
+  const watched = await prisma.watched_movies.findMany({
+    where: {
+      username,
+      door: { in: countedDoors.map((door) => door.door) },
+    },
+    select: { door: true },
+  });
+  const movieCount = countedDoors.length;
+  const watchedCount = watched.length;
 
   return {
     movieCount,
@@ -376,6 +646,7 @@ app.get('/api/me', auth, async (req, res) => {
       email: true,
       admin: true,
       avatar: true,
+      mustChange: true,
     },
   });
   if (!user) return res.status(401).json({ error: 'Please log in again' });
@@ -388,7 +659,7 @@ app.get('/api/me', auth, async (req, res) => {
   });
 });
 
-app.put('/api/profile/avatar', auth, async (req, res) => {
+app.put('/api/profile/avatar', auth, passwordChangeCompleted, async (req, res) => {
   const { avatar } = req.body || {};
   if (typeof avatar !== 'string' || !AVATARS.has(avatar)) {
     return res.status(400).json({ error: 'Choose a profile picture from the list' });
@@ -402,7 +673,7 @@ app.put('/api/profile/avatar', auth, async (req, res) => {
 });
 
 // ----- calendar (friends) -----
-app.get('/api/doors', auth, async (req, res) => {
+app.get('/api/doors', auth, passwordChangeCompleted, async (req, res) => {
   const t = today();
   const watchedRows = await prisma.watched_movies.findMany({
     where: { username: req.user.username },
@@ -467,7 +738,7 @@ app.get('/api/doors', auth, async (req, res) => {
   res.json({ today: t, doors, ...(await movieProgress(req.user.username)) });
 });
 
-app.patch('/api/doors/:n/watched', auth, async (req, res) => {
+app.patch('/api/doors/:n/watched', auth, passwordChangeCompleted, async (req, res) => {
   if (!/^\d+$/.test(req.params.n)) {
     return res.status(400).json({ error: 'Choose a valid movie door' });
   }
@@ -506,7 +777,7 @@ app.patch('/api/doors/:n/watched', auth, async (req, res) => {
 });
 
 // All movie community data is private until the movie's unlock date.
-app.get('/api/doors/:n/community', auth, async (req, res) => {
+app.get('/api/doors/:n/community', auth, passwordChangeCompleted, async (req, res) => {
   if (!/^\d+$/.test(req.params.n)) {
     return res.status(400).json({ error: 'Choose a valid movie door' });
   }
@@ -556,7 +827,7 @@ app.get('/api/doors/:n/community', auth, async (req, res) => {
   });
 });
 
-app.put('/api/doors/:n/rating', auth, async (req, res) => {
+app.put('/api/doors/:n/rating', auth, passwordChangeCompleted, async (req, res) => {
   if (!/^\d+$/.test(req.params.n)) {
     return res.status(400).json({ error: 'Choose a valid movie door' });
   }
@@ -583,7 +854,7 @@ app.put('/api/doors/:n/rating', auth, async (req, res) => {
   res.json({ rating: stars, ...(await ratingSummary(doorNumber)) });
 });
 
-app.post('/api/doors/:n/reactions', auth, async (req, res) => {
+app.post('/api/doors/:n/reactions', auth, passwordChangeCompleted, async (req, res) => {
   if (!/^\d+$/.test(req.params.n)) {
     return res.status(400).json({ error: 'Choose a valid movie door' });
   }
@@ -639,7 +910,7 @@ app.post('/api/doors/:n/reactions', auth, async (req, res) => {
   });
 });
 
-app.post('/api/doors/:n/comments', auth, async (req, res) => {
+app.post('/api/doors/:n/comments', auth, passwordChangeCompleted, async (req, res) => {
   if (!/^\d+$/.test(req.params.n)) {
     return res.status(400).json({ error: 'Choose a valid movie door' });
   }
@@ -665,7 +936,7 @@ app.post('/api/doors/:n/comments', auth, async (req, res) => {
   });
 });
 
-app.delete('/api/doors/:n/comments/:id', auth, async (req, res) => {
+app.delete('/api/doors/:n/comments/:id', auth, passwordChangeCompleted, async (req, res) => {
   if (!/^\d+$/.test(req.params.n) || !/^\d+$/.test(req.params.id)) {
     return res.status(400).json({ error: 'Choose a valid comment' });
   }
@@ -680,7 +951,7 @@ app.delete('/api/doors/:n/comments/:id', auth, async (req, res) => {
   res.json({ ok: true });
 });
 
-app.post('/api/doors/:n/vote', auth, async (req, res) => {
+app.post('/api/doors/:n/vote', auth, passwordChangeCompleted, async (req, res) => {
   if (!/^\d+$/.test(req.params.n)) {
     return res.status(400).json({ error: 'Choose a valid movie door' });
   }
@@ -710,7 +981,7 @@ app.post('/api/doors/:n/vote', auth, async (req, res) => {
 });
 
 // ----- admin -----
-app.get('/api/admin/doors', auth, admin, async (req, res) => {
+app.get('/api/admin/doors', auth, passwordChangeCompleted, admin, async (req, res) => {
   const doorRows = await prisma.doors.findMany({ orderBy: { door: 'asc' } });
   const doors = await Promise.all(doorRows.map(async (door) => {
     const rating = await ratingSummary(door.door);
@@ -729,7 +1000,7 @@ app.get('/api/admin/doors', auth, admin, async (req, res) => {
   res.json(doors);
 });
 
-app.put('/api/admin/doors/:n', auth, admin, async (req, res) => {
+app.put('/api/admin/doors/:n', auth, passwordChangeCompleted, admin, async (req, res) => {
   if (!/^\d+$/.test(req.params.n)) {
     return res.status(400).json({ error: 'Choose a valid door' });
   }
@@ -843,7 +1114,7 @@ app.put('/api/admin/doors/:n', auth, admin, async (req, res) => {
   res.json({ ok: true });
 });
 
-app.post('/api/admin/swap', auth, admin, async (req, res) => {
+app.post('/api/admin/swap', auth, passwordChangeCompleted, admin, async (req, res) => {
   // reorder = swap movies between two doors
   const { a: firstDoor, b: secondDoor } = req.body || {};
   if (!Number.isInteger(firstDoor) || !Number.isInteger(secondDoor)) {
@@ -868,20 +1139,31 @@ app.post('/api/admin/swap', auth, admin, async (req, res) => {
   res.json({ ok: true });
 });
 
-app.get('/api/admin/users', auth, admin, async (req, res) =>
+app.get('/api/admin/users', auth, passwordChangeCompleted, admin, async (req, res) =>
   res.json(await prisma.users.findMany({
-    select: { username: true, name: true, admin: true },
+    select: { username: true, name: true, email: true, admin: true, mustChange: true },
   })),
 );
 
-app.post('/api/admin/users', auth, admin, async (req, res) => {
-  const { username = '', password = '' } = req.body || {};
+app.post('/api/admin/users', auth, passwordChangeCompleted, admin, async (req, res) => {
+  const { username = '', password = '', email = '' } = req.body || {};
   const normalizedUsername =
     typeof username === 'string' ? username.trim().toLowerCase() : '';
+  const normalizedEmail =
+    typeof email === 'string' ? email.trim().toLowerCase() : '';
   if (!/^[a-z0-9._-]{3,32}$/.test(normalizedUsername) || !validPassword(password)) {
     return res
       .status(400)
       .json({ error: 'Usernames must be 3–32 letters, numbers, dots, underscores or hyphens; passwords need 12+ characters (maximum 72 UTF-8 bytes)' });
+  }
+  if (
+    !normalizedEmail ||
+    normalizedEmail.length > 254 ||
+    !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)
+  ) {
+    return res.status(400).json({
+      error: 'Enter a valid friend email address for password reset',
+    });
   }
 
   try {
@@ -891,6 +1173,7 @@ app.post('/api/admin/users', auth, admin, async (req, res) => {
         name: username.trim(),
         hash: bcrypt.hashSync(password, 12),
         admin: 0,
+        email: normalizedEmail,
       },
     });
     res.json({ ok: true });
@@ -902,21 +1185,109 @@ app.post('/api/admin/users', auth, admin, async (req, res) => {
   }
 });
 
-app.delete('/api/admin/users/:u', auth, admin, async (req, res) => {
+app.put(
+  '/api/admin/users/:u/email',
+  auth,
+  passwordChangeCompleted,
+  admin,
+  async (req, res) => {
+    const username =
+      typeof req.params.u === 'string'
+        ? req.params.u.trim().toLowerCase()
+        : '';
+    const email =
+      typeof req.body?.email === 'string'
+        ? req.body.email.trim().toLowerCase()
+        : '';
+
+    if (
+      !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ||
+      email.length > 254
+    ) {
+      return res.status(400).json({
+        error: 'Enter a valid friend email address',
+      });
+    }
+
+    const user = await prisma.users.findUnique({ where: { username } });
+    if (!user) return res.status(404).json({ error: 'Friend account not found' });
+    if (user.admin) {
+      return res.status(403).json({ error: 'Admin account email cannot be changed here' });
+    }
+
+    try {
+      await prisma.users.update({
+        where: { username },
+        data: { email },
+      });
+      res.json({ ok: true, email });
+    } catch (error) {
+      if (error.code === 'P2002') {
+        return res.status(409).json({ error: 'That email is already registered' });
+      }
+      throw error;
+    }
+  },
+);
+
+app.delete('/api/admin/users/:u', auth, passwordChangeCompleted, admin, async (req, res) => {
   await prisma.users.deleteMany({
     where: { username: req.params.u, admin: 0 },
   });
   res.json({ ok: true });
 });
 
-app.get('/api/admin/backup', auth, admin, async (req, res) => {
+app.post(
+  '/api/admin/users/:u/password',
+  passwordRateLimit,
+  auth,
+  passwordChangeCompleted,
+  admin,
+  async (req, res) => {
+    const username = typeof req.params.u === 'string'
+      ? req.params.u.trim().toLowerCase()
+      : '';
+    const newPassword =
+      typeof req.body?.password === 'string' ? req.body.password : '';
+
+    if (!validNewPassword(newPassword)) {
+      return res.status(400).json({
+        error: 'Password must be at least 8 characters and no more than 72 bytes',
+      });
+    }
+
+    const user = await prisma.users.findUnique({ where: { username } });
+    if (!user) return res.status(404).json({ error: 'Friend account not found' });
+    if (user.admin) {
+      return res.status(403).json({ error: 'Admin account passwords cannot be reset here' });
+    }
+    if (bcrypt.compareSync(newPassword, user.hash)) {
+      return res.status(400).json({
+        error: 'New password must be different from the current password',
+      });
+    }
+
+    await prisma.users.update({
+      where: { username },
+      data: {
+        hash: bcrypt.hashSync(newPassword, 12),
+        mustChange: true,
+        tokenVersion: { increment: 1 },
+      },
+    });
+
+    res.json({ ok: true, mustChange: true });
+  },
+);
+
+app.get('/api/admin/backup', auth, passwordChangeCompleted, admin, async (req, res) => {
   // free hosts can wipe the database: keep a backup!
   res
     .attachment('movies-backup.json')
     .json(await prisma.doors.findMany({ orderBy: { door: 'asc' } }));
 });
 
-app.post('/api/admin/restore', auth, admin, async (req, res) => {
+app.post('/api/admin/restore', auth, passwordChangeCompleted, admin, async (req, res) => {
   if (!Array.isArray(req.body)) {
     return res.status(400).json({ error: 'Backup must contain a list of doors' });
   }
