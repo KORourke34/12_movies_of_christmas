@@ -1,0 +1,96 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model doors {
+  door            Int               @id @default(autoincrement())
+  unlock_at       String?
+  title           String?
+  year            String?
+  runtime         String?
+  genre           String?
+  synopsis        String?
+  watch           String?
+  poster          String?
+  trailer         String?
+  vote_enabled    Int               @default(0)
+  vote_open_at    String?
+  vote_candidates String            @default("[]")
+  vote_winner     Int?
+  movie_comments  movie_comments[]
+  movie_ratings   movie_ratings[]
+  movie_reactions movie_reactions[]
+  movie_votes     movie_votes[]
+  watched_movies  watched_movies[]
+}
+
+model movie_comments {
+  id         Int    @id @default(autoincrement())
+  username   String
+  door       Int
+  comment    String
+  created_at String @default("CURRENT_TIMESTAMP")
+  doors      doors  @relation(fields: [door], references: [door], onDelete: Cascade, onUpdate: NoAction)
+  users      users  @relation(fields: [username], references: [username], onDelete: Cascade, onUpdate: NoAction)
+}
+
+model movie_ratings {
+  username   String
+  door       Int
+  stars_half Int
+  doors      doors  @relation(fields: [door], references: [door], onDelete: Cascade, onUpdate: NoAction)
+  users      users  @relation(fields: [username], references: [username], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([username, door])
+}
+
+model movie_reactions {
+  username String
+  door     Int
+  emoji    String
+  doors    doors  @relation(fields: [door], references: [door], onDelete: Cascade, onUpdate: NoAction)
+  users    users  @relation(fields: [username], references: [username], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([username, door, emoji])
+}
+
+model movie_votes {
+  username  String
+  door      Int
+  candidate Int
+  doors     doors  @relation(fields: [door], references: [door], onDelete: Cascade, onUpdate: NoAction)
+  users     users  @relation(fields: [username], references: [username], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([username, door])
+}
+
+model users {
+  username        String            @id
+  name            String?
+  hash            String
+  admin           Int               @default(0)
+  first_name      String?
+  last_name       String?
+  email           String?           @unique(map: "users_email_unique")
+  avatar          String            @default("santa")
+  movie_comments  movie_comments[]
+  movie_ratings   movie_ratings[]
+  movie_reactions movie_reactions[]
+  movie_votes     movie_votes[]
+  watched_movies  watched_movies[]
+}
+
+model watched_movies {
+  username   String
+  door       Int
+  watched_at String @default("CURRENT_TIMESTAMP")
+  doors      doors  @relation(fields: [door], references: [door], onDelete: Cascade, onUpdate: NoAction)
+  users      users  @relation(fields: [username], references: [username], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([username, door])
+}

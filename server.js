@@ -1,13 +1,18 @@
 // server.js – Express + SQLite backend. Movie details for a door are only
 // sent to the browser once its unlock date has arrived (so no peeking!).
 const express = require('express');
-const Database = require('better-sqlite3');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const cookieParser = require('cookie-parser');
 const path = require('path');
 const crypto = require('crypto');
 const cfg = require('./config');
+const dbPath = process.env.DB_PATH
+  ? path.resolve(process.env.DB_PATH)
+  : path.join(__dirname, 'advent.db');
+process.env.DATABASE_URL = `file:${dbPath}`;
+const { PrismaClient } = require('@prisma/client');
+const prisma = new PrismaClient();
 
 const production = process.env.NODE_ENV === 'production';
 const registrationEnabled = production
@@ -35,10 +40,6 @@ const trustProxyHops = Number(process.env.TRUST_PROXY_HOPS || 0);
 if (!Number.isInteger(trustProxyHops) || trustProxyHops < 0) {
   throw new Error('TRUST_PROXY_HOPS must be a non-negative integer');
 }
-const db = new Database(
-  process.env.DB_PATH || path.join(__dirname, 'advent.db'),
-);
-db.pragma('foreign_keys = ON');
 const F = [
   'title',
   'year',
@@ -61,135 +62,37 @@ const AVATARS = new Set([
   'present',
 ]);
 
-db.exec(`
-  CREATE TABLE IF NOT EXISTS users(
-    username TEXT PRIMARY KEY,
-    name TEXT,
-    hash TEXT NOT NULL,
-    admin INTEGER DEFAULT 0
-  );
-  CREATE TABLE IF NOT EXISTS doors(
-    door INTEGER PRIMARY KEY,
-    unlock_at TEXT,
-    title TEXT,
-    year TEXT,
-    runtime TEXT,
-    genre TEXT,
-    synopsis TEXT,
-    watch TEXT,
-    poster TEXT,
-    trailer TEXT,
-    vote_enabled INTEGER NOT NULL DEFAULT 0,
-    vote_open_at TEXT,
-    vote_candidates TEXT NOT NULL DEFAULT '[]',
-    vote_winner INTEGER
-  );
-`);
-const ratingColumns = new Set(
-  db.prepare('PRAGMA table_info(movie_ratings)').all().map((column) => column.name),
-);
-if (ratingColumns.has('stars')) {
-  const migrateRatings = db.transaction(() => {
-    db.exec(`
-      CREATE TABLE movie_ratings_half(
-        username TEXT NOT NULL REFERENCES users(username) ON DELETE CASCADE,
-        door INTEGER NOT NULL REFERENCES doors(door) ON DELETE CASCADE,
-        stars_half INTEGER NOT NULL CHECK(stars_half BETWEEN 1 AND 10),
-        PRIMARY KEY(username, door)
-      );
-      INSERT INTO movie_ratings_half(username,door,stars_half)
-        SELECT username,door,stars * 2 FROM movie_ratings;
-      DROP TABLE movie_ratings;
-      ALTER TABLE movie_ratings_half RENAME TO movie_ratings;
-    `);
-  });
-  migrateRatings();
-}
 
-const userColumns = new Set(
-  db.prepare('PRAGMA table_info(users)').all().map((column) => column.name),
-);
-for (const [column, definition] of Object.entries({
-  first_name: 'TEXT',
-  last_name: 'TEXT',
-  email: 'TEXT',
-  avatar: "TEXT NOT NULL DEFAULT 'santa'",
-})) {
-  if (!userColumns.has(column)) {
-    db.exec(`ALTER TABLE users ADD COLUMN ${column} ${definition}`);
-  }
-}
-db.exec('CREATE UNIQUE INDEX IF NOT EXISTS users_email_unique ON users(email)');
-// Add new door columns one at a time so existing databases keep all their data.
-const doorColumns = new Set(
-  db.prepare('PRAGMA table_info(doors)').all().map((column) => column.name),
-);
-for (const [column, definition] of Object.entries({
-  trailer: 'TEXT',
-  vote_enabled: 'INTEGER NOT NULL DEFAULT 0',
-  vote_open_at: 'TEXT',
-  vote_candidates: "TEXT NOT NULL DEFAULT '[]'",
-  vote_winner: 'INTEGER',
-})) {
-  if (!doorColumns.has(column)) {
-    db.exec(`ALTER TABLE doors ADD COLUMN ${column} ${definition}`);
-  }
-}
-db.exec(`
-  CREATE TABLE IF NOT EXISTS watched_movies(
-    username TEXT NOT NULL REFERENCES users(username) ON DELETE CASCADE,
-    door INTEGER NOT NULL REFERENCES doors(door) ON DELETE CASCADE,
-    watched_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY(username, door)
+async function bootstrap() {
+  await prisma.$executeRawUnsafe(
+    'CREATE UNIQUE INDEX IF NOT EXISTS users_email_unique ON users(email)',
   );
-  CREATE TABLE IF NOT EXISTS movie_ratings(
-    username TEXT NOT NULL REFERENCES users(username) ON DELETE CASCADE,
-    door INTEGER NOT NULL REFERENCES doors(door) ON DELETE CASCADE,
-    stars_half INTEGER NOT NULL CHECK(stars_half BETWEEN 1 AND 10),
-    PRIMARY KEY(username, door)
+  await Promise.all(
+    cfg.dates.map((unlockAt, index) =>
+      prisma.doors.upsert({
+        where: { door: index + 1 },
+        update: {},
+        create: { door: index + 1, unlock_at: unlockAt },
+      }),
+    ),
   );
-  CREATE TABLE IF NOT EXISTS movie_reactions(
-    username TEXT NOT NULL REFERENCES users(username) ON DELETE CASCADE,
-    door INTEGER NOT NULL REFERENCES doors(door) ON DELETE CASCADE,
-    emoji TEXT NOT NULL,
-    PRIMARY KEY(username, door, emoji)
-  );
-  CREATE TABLE IF NOT EXISTS movie_comments(
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    username TEXT NOT NULL REFERENCES users(username) ON DELETE CASCADE,
-    door INTEGER NOT NULL REFERENCES doors(door) ON DELETE CASCADE,
-    comment TEXT NOT NULL CHECK(length(comment) BETWEEN 1 AND 140),
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-  );
-  CREATE TABLE IF NOT EXISTS movie_votes(
-    username TEXT NOT NULL REFERENCES users(username) ON DELETE CASCADE,
-    door INTEGER NOT NULL REFERENCES doors(door) ON DELETE CASCADE,
-    candidate INTEGER NOT NULL CHECK(candidate BETWEEN 0 AND 4),
-    PRIMARY KEY(username, door)
-  );
-`);
 
-cfg.dates.forEach((d, i) => {
-  db.prepare('INSERT OR IGNORE INTO doors(door, unlock_at) VALUES(?,?)').run(
-    i + 1,
-    d,
-  );
-});
-
-// Admin account comes from environment variables (password is hashed before saving).
-if (process.env.ADMIN_USER && process.env.ADMIN_PASS) {
-  const adminUsername = process.env.ADMIN_USER.trim().toLowerCase();
-  if (!/^[a-z0-9._-]{3,32}$/.test(adminUsername)) {
-    throw new Error('ADMIN_USER must be 3 to 32 letters, numbers, dots, underscores or hyphens');
+  if (process.env.ADMIN_USER && process.env.ADMIN_PASS) {
+    const adminUsername = process.env.ADMIN_USER.trim().toLowerCase();
+    if (!/^[a-z0-9._-]{3,32}$/.test(adminUsername)) {
+      throw new Error('ADMIN_USER must be 3 to 32 letters, numbers, dots, underscores or hyphens');
+    }
+    await prisma.users.upsert({
+      where: { username: adminUsername },
+      update: { hash: bcrypt.hashSync(process.env.ADMIN_PASS, 12), admin: 1 },
+      create: {
+        username: adminUsername,
+        name: process.env.ADMIN_USER.trim(),
+        hash: bcrypt.hashSync(process.env.ADMIN_PASS, 12),
+        admin: 1,
+      },
+    });
   }
-  db.prepare(
-    `INSERT INTO users(username,name,hash,admin) VALUES(?,?,?,1)
-    ON CONFLICT(username) DO UPDATE SET hash=excluded.hash, admin=1`,
-  ).run(
-    adminUsername,
-    process.env.ADMIN_USER.trim(),
-    bcrypt.hashSync(process.env.ADMIN_PASS, 12),
-  );
 }
 
 const app = express();
@@ -282,27 +185,29 @@ const readCandidates = (value) => {
     return [];
   }
 };
-const doorExistsAndUnlocked = (doorNumber) => {
-  const door = db
-    .prepare('SELECT * FROM doors WHERE door=?')
-    .get(doorNumber);
+const doorExistsAndUnlocked = async (doorNumber) => {
+  const door = await prisma.doors.findUnique({ where: { door: doorNumber } });
   return door && door.unlock_at <= today() ? door : null;
 };
-const ratingSummary = (doorNumber) =>
-  db
-    .prepare(
-      'SELECT ROUND(AVG(stars_half) / 2.0, 1) AS average, COUNT(*) AS count FROM movie_ratings WHERE door=?',
-    )
-    .get(doorNumber);
-const voteTally = (doorNumber, candidates) => {
-  const counts = candidates.map((_, candidate) =>
-    db
-      .prepare('SELECT COUNT(*) AS count FROM movie_votes WHERE door=? AND candidate=?')
-      .get(doorNumber, candidate).count,
+const ratingSummary = async (doorNumber) => {
+  const [aggregate] = await prisma.$queryRawUnsafe(
+    'SELECT ROUND(AVG(stars_half) / 2.0, 1) AS average, COUNT(*) AS count FROM movie_ratings WHERE door=?',
+    doorNumber,
+  );
+  return aggregate;
+};
+const voteTally = async (doorNumber, candidates) => {
+  const counts = await Promise.all(
+    candidates.map(async (_, candidate) => {
+      const count = await prisma.movie_votes.count({
+        where: { door: doorNumber, candidate },
+      });
+      return count;
+    }),
   );
   return counts;
 };
-const winningCandidate = (door, candidates, counts = voteTally(door.door, candidates)) => {
+const winningCandidate = (door, candidates, counts) => {
   if (Number.isInteger(door.vote_winner) && candidates[door.vote_winner]) {
     return door.vote_winner;
   }
@@ -311,7 +216,7 @@ const winningCandidate = (door, candidates, counts = voteTally(door.door, candid
     0,
   );
 };
-const auth = (req, res, next) => {
+const auth = async (req, res, next) => {
   let claims;
   try {
     claims = jwt.verify(req.cookies.t, SECRET);
@@ -321,16 +226,18 @@ const auth = (req, res, next) => {
 
   let username = claims.username;
   if (!username) {
-    const matches = db
-      .prepare('SELECT username FROM users WHERE name=?')
-      .all(claims.name);
+    const matches = await prisma.users.findMany({
+      where: { name: claims.name },
+      select: { username: true },
+    });
     if (matches.length === 1) username = matches[0].username;
   }
   if (!username) return res.status(401).json({ error: 'Please log in again' });
 
-  const currentUser = db
-    .prepare('SELECT username,admin FROM users WHERE username=?')
-    .get(username);
+  const currentUser = await prisma.users.findUnique({
+    where: { username },
+    select: { username: true, admin: true },
+  });
   if (!currentUser) return res.status(401).json({ error: 'Please log in again' });
 
   req.user = { ...claims, username: currentUser.username, admin: !!currentUser.admin };
@@ -355,7 +262,7 @@ const setSession = (res, u) => {
   );
 };
 
-app.post('/api/login', loginRateLimit, (req, res) => {
+app.post('/api/login', loginRateLimit, async (req, res) => {
   const { username = '', password = '' } = req.body || {};
   const normalizedUsername =
     typeof username === 'string' ? username.trim().toLowerCase() : '';
@@ -366,9 +273,7 @@ app.post('/api/login', loginRateLimit, (req, res) => {
   ) {
     return res.status(401).json({ error: 'Wrong username or password' });
   }
-  const u = db
-    .prepare('SELECT * FROM users WHERE username=?')
-    .get(normalizedUsername);
+  const u = await prisma.users.findUnique({ where: { username: normalizedUsername } });
   if (!u || !bcrypt.compareSync(passwordValue, u.hash)) {
     return res.status(401).json({ error: 'Wrong username or password' });
   }
@@ -377,7 +282,7 @@ app.post('/api/login', loginRateLimit, (req, res) => {
   res.json({ name: u.name, admin: !!u.admin });
 });
 
-app.post('/api/register', registrationRateLimit, (req, res) => {
+app.post('/api/register', registrationRateLimit, async (req, res) => {
   if (!registrationEnabled) {
     return res.status(403).json({ error: 'Account creation is disabled' });
   }
@@ -411,27 +316,23 @@ app.post('/api/register', registrationRateLimit, (req, res) => {
   const normalizedUsername = username.toLowerCase();
   const name = `${firstName} ${lastName}`;
   try {
-    db.prepare(
-      `INSERT INTO users(username,name,hash,admin,first_name,last_name,email)
-      VALUES(?,?,?,0,?,?,?)`,
-    ).run(
-      normalizedUsername,
-      name,
-      bcrypt.hashSync(password, 12),
-      firstName,
-      lastName,
-      email,
-    );
+    await prisma.users.create({
+      data: {
+        username: normalizedUsername,
+        name,
+        hash: bcrypt.hashSync(password, 12),
+        admin: 0,
+        first_name: firstName,
+        last_name: lastName,
+        email,
+      },
+    });
   } catch (error) {
-    if (error.code === 'SQLITE_CONSTRAINT_UNIQUE') {
-      if (error.message.includes('users.email')) {
+    if (error.code === 'P2002') {
+      const target = error.meta?.target || [];
+      if (target.includes('email')) {
         return res.status(409).json({ error: 'That email is already registered' });
       }
-      if (error.message.includes('users.username')) {
-        return res.status(409).json({ error: 'That username already exists' });
-      }
-    }
-    if (error.code === 'SQLITE_CONSTRAINT_PRIMARYKEY') {
       return res.status(409).json({ error: 'That username already exists' });
     }
     throw error;
@@ -442,16 +343,18 @@ app.post('/api/register', registrationRateLimit, (req, res) => {
 });
 
 app.post('/api/logout', (req, res) => res.clearCookie('t').json({ ok: true }));
-const movieProgress = (username) => {
-  const { movieCount, watchedCount } = db
-    .prepare(
-      `SELECT COUNT(d.door) AS movieCount, COUNT(w.door) AS watchedCount
-      FROM doors d
-      LEFT JOIN watched_movies w ON w.door=d.door AND w.username=?
-      WHERE (d.vote_enabled=0 AND trim(COALESCE(d.title, '')) <> '')
-        OR (d.vote_enabled=1 AND d.unlock_at<=?)`,
-    )
-    .get(username, today());
+const movieProgress = async (username) => {
+  const [progress] = await prisma.$queryRawUnsafe(
+    `SELECT COUNT(d.door) AS movieCount, COUNT(w.door) AS watchedCount
+     FROM doors d
+     LEFT JOIN watched_movies w ON w.door=d.door AND w.username=?
+     WHERE (d.vote_enabled=0 AND trim(COALESCE(d.title, '')) <> '')
+       OR (d.vote_enabled=1 AND d.unlock_at<=?)`,
+    username,
+    today(),
+  );
+  const movieCount = Number(progress.movieCount);
+  const watchedCount = Number(progress.watchedCount);
 
   return {
     movieCount,
@@ -462,52 +365,57 @@ const movieProgress = (username) => {
   };
 };
 
-app.get('/api/me', auth, (req, res) => {
-  const user = db
-    .prepare(
-      'SELECT username,name,first_name,last_name,email,admin,avatar FROM users WHERE username=?',
-    )
-    .get(req.user.username);
+app.get('/api/me', auth, async (req, res) => {
+  const user = await prisma.users.findUnique({
+    where: { username: req.user.username },
+    select: {
+      username: true,
+      name: true,
+      first_name: true,
+      last_name: true,
+      email: true,
+      admin: true,
+      avatar: true,
+    },
+  });
   if (!user) return res.status(401).json({ error: 'Please log in again' });
 
   res.json({
     ...user,
     admin: !!user.admin,
     avatar: AVATARS.has(user.avatar) ? user.avatar : 'santa',
-    ...movieProgress(user.username),
+    ...(await movieProgress(user.username)),
   });
 });
 
-app.put('/api/profile/avatar', auth, (req, res) => {
+app.put('/api/profile/avatar', auth, async (req, res) => {
   const { avatar } = req.body || {};
   if (typeof avatar !== 'string' || !AVATARS.has(avatar)) {
     return res.status(400).json({ error: 'Choose a profile picture from the list' });
   }
 
-  db.prepare('UPDATE users SET avatar=? WHERE username=?').run(
-    avatar,
-    req.user.username,
-  );
+  await prisma.users.update({
+    where: { username: req.user.username },
+    data: { avatar },
+  });
   res.json({ avatar });
 });
 
 // ----- calendar (friends) -----
-app.get('/api/doors', auth, (req, res) => {
+app.get('/api/doors', auth, async (req, res) => {
   const t = today();
-  const watched = new Set(
-    db
-      .prepare('SELECT door FROM watched_movies WHERE username=?')
-      .all(req.user.username)
-      .map((row) => row.door),
-  );
-  const doors = db
-    .prepare('SELECT * FROM doors ORDER BY door')
-    .all()
-    .map((d) => {
+  const watchedRows = await prisma.watched_movies.findMany({
+    where: { username: req.user.username },
+    select: { door: true },
+  });
+  const watched = new Set(watchedRows.map((row) => row.door));
+  const doorRows = await prisma.doors.findMany({ orderBy: { door: 'asc' } });
+  const doors = await Promise.all(
+    doorRows.map(async (d) => {
       if (d.unlock_at <= t) {
         if (d.vote_enabled) {
           const candidates = readCandidates(d.vote_candidates);
-          const counts = voteTally(d.door, candidates);
+          const counts = await voteTally(d.door, candidates);
           const winner = winningCandidate(d, candidates, counts);
           return {
             ...d,
@@ -533,9 +441,11 @@ app.get('/api/doors', auth, (req, res) => {
         d.vote_open_at &&
         d.vote_open_at <= t
       ) {
-        const vote = db
-          .prepare('SELECT candidate FROM movie_votes WHERE username=? AND door=?')
-          .get(req.user.username, d.door);
+        const vote = await prisma.movie_votes.findUnique({
+          where: {
+            username_door: { username: req.user.username, door: d.door },
+          },
+        });
         return {
           door: d.door,
           unlock_at: d.unlock_at,
@@ -552,22 +462,22 @@ app.get('/api/doors', auth, (req, res) => {
         unlocked: false,
         vote_opens_at: d.vote_enabled ? d.vote_open_at : null,
       };
-    });
-  res.json({ today: t, doors, ...movieProgress(req.user.username) });
+    }),
+  );
+  res.json({ today: t, doors, ...(await movieProgress(req.user.username)) });
 });
 
-app.patch('/api/doors/:n/watched', auth, (req, res) => {
+app.patch('/api/doors/:n/watched', auth, async (req, res) => {
   if (!/^\d+$/.test(req.params.n)) {
     return res.status(400).json({ error: 'Choose a valid movie door' });
   }
 
   const doorNumber = Number(req.params.n);
-  const door = db
-    .prepare('SELECT door,unlock_at,title FROM doors WHERE door=?')
-    .get(doorNumber);
-  const isVoteMovie = db
-    .prepare('SELECT vote_enabled FROM doors WHERE door=?')
-    .get(doorNumber)?.vote_enabled;
+  const door = await prisma.doors.findUnique({
+    where: { door: doorNumber },
+    select: { door: true, unlock_at: true, title: true, vote_enabled: true },
+  });
+  const isVoteMovie = door?.vote_enabled;
   if (!door || (!door.title?.trim() && !isVoteMovie)) {
     return res.status(404).json({ error: 'There is no movie on that door' });
   }
@@ -581,51 +491,56 @@ app.patch('/api/doors/:n/watched', auth, (req, res) => {
   }
 
   if (watched) {
-    db.prepare(
-      'INSERT OR IGNORE INTO watched_movies(username,door) VALUES(?,?)',
-    ).run(req.user.username, doorNumber);
+    await prisma.watched_movies.upsert({
+      where: { username_door: { username: req.user.username, door: doorNumber } },
+      update: {},
+      create: { username: req.user.username, door: doorNumber },
+    });
   } else {
-    db.prepare('DELETE FROM watched_movies WHERE username=? AND door=?').run(
-      req.user.username,
-      doorNumber,
-    );
+    await prisma.watched_movies.deleteMany({
+      where: { username: req.user.username, door: doorNumber },
+    });
   }
 
-  res.json({ watched, ...movieProgress(req.user.username) });
+  res.json({ watched, ...(await movieProgress(req.user.username)) });
 });
 
 // All movie community data is private until the movie's unlock date.
-app.get('/api/doors/:n/community', auth, (req, res) => {
+app.get('/api/doors/:n/community', auth, async (req, res) => {
   if (!/^\d+$/.test(req.params.n)) {
     return res.status(400).json({ error: 'Choose a valid movie door' });
   }
   const doorNumber = Number(req.params.n);
-  if (!doorExistsAndUnlocked(doorNumber)) {
+  if (!(await doorExistsAndUnlocked(doorNumber))) {
     return res.status(403).json({ error: 'That movie is not available yet' });
   }
 
-  const ownRating = db
-    .prepare('SELECT stars_half FROM movie_ratings WHERE username=? AND door=?')
-    .get(req.user.username, doorNumber);
-  const summary = ratingSummary(doorNumber);
-  const counts = db
-    .prepare(
-      'SELECT emoji, COUNT(*) AS count FROM movie_reactions WHERE door=? GROUP BY emoji',
-    )
-    .all(doorNumber);
-  const mine = new Set(
-    db
-      .prepare('SELECT emoji FROM movie_reactions WHERE username=? AND door=?')
-      .all(req.user.username, doorNumber)
-      .map((row) => row.emoji),
-  );
-  const comments = db
-    .prepare(
-      `SELECT c.id,c.username,u.name AS author,c.comment,c.created_at
-      FROM movie_comments c JOIN users u ON u.username=c.username
-      WHERE c.door=? ORDER BY c.id`,
-    )
-    .all(doorNumber);
+  const ownRating = await prisma.movie_ratings.findUnique({
+    where: { username_door: { username: req.user.username, door: doorNumber } },
+  });
+  const summary = await ratingSummary(doorNumber);
+  const counts = await prisma.movie_reactions.groupBy({
+    by: ['emoji'],
+    where: { door: doorNumber },
+    _count: { emoji: true },
+  });
+  const mineRows = await prisma.movie_reactions.findMany({
+    where: { username: req.user.username, door: doorNumber },
+    select: { emoji: true },
+  });
+  const mine = new Set(mineRows.map((row) => row.emoji));
+  const commentRows = await prisma.movie_comments.findMany({
+    where: { door: doorNumber },
+    orderBy: { id: 'asc' },
+    include: { users: { select: { name: true } } },
+  });
+  const comments = commentRows.map((comment) => ({
+    id: comment.id,
+    username: comment.username,
+    author: comment.users.name,
+    comment: comment.comment,
+    created_at: comment.created_at,
+  }));
 
   res.json({
     rating: ownRating ? ownRating.stars_half / 2 : 0,
@@ -633,7 +548,7 @@ app.get('/api/doors/:n/community', auth, (req, res) => {
     ratingCount: summary.count,
     reactions: REACTIONS.map((emoji) => ({
       emoji,
-      count: counts.find((row) => row.emoji === emoji)?.count || 0,
+      count: counts.find((row) => row.emoji === emoji)?._count.emoji || 0,
       reacted: mine.has(emoji),
     })),
     comments,
@@ -641,12 +556,12 @@ app.get('/api/doors/:n/community', auth, (req, res) => {
   });
 });
 
-app.put('/api/doors/:n/rating', auth, (req, res) => {
+app.put('/api/doors/:n/rating', auth, async (req, res) => {
   if (!/^\d+$/.test(req.params.n)) {
     return res.status(400).json({ error: 'Choose a valid movie door' });
   }
   const doorNumber = Number(req.params.n);
-  if (!doorExistsAndUnlocked(doorNumber)) {
+  if (!(await doorExistsAndUnlocked(doorNumber))) {
     return res.status(403).json({ error: 'That movie is not available yet' });
   }
   const { stars } = req.body || {};
@@ -660,19 +575,20 @@ app.put('/api/doors/:n/rating', auth, (req, res) => {
     return res.status(400).json({ error: 'Choose a rating from 0.5 to 5 stars in half-star steps' });
   }
 
-  db.prepare(
-    `INSERT INTO movie_ratings(username,door,stars_half) VALUES(?,?,?)
-    ON CONFLICT(username,door) DO UPDATE SET stars_half=excluded.stars_half`,
-  ).run(req.user.username, doorNumber, stars * 2);
-  res.json({ rating: stars, ...ratingSummary(doorNumber) });
+  await prisma.movie_ratings.upsert({
+    where: { username_door: { username: req.user.username, door: doorNumber } },
+    update: { stars_half: stars * 2 },
+    create: { username: req.user.username, door: doorNumber, stars_half: stars * 2 },
+  });
+  res.json({ rating: stars, ...(await ratingSummary(doorNumber)) });
 });
 
-app.post('/api/doors/:n/reactions', auth, (req, res) => {
+app.post('/api/doors/:n/reactions', auth, async (req, res) => {
   if (!/^\d+$/.test(req.params.n)) {
     return res.status(400).json({ error: 'Choose a valid movie door' });
   }
   const doorNumber = Number(req.params.n);
-  if (!doorExistsAndUnlocked(doorNumber)) {
+  if (!(await doorExistsAndUnlocked(doorNumber))) {
     return res.status(403).json({ error: 'That movie is not available yet' });
   }
   const { emoji } = req.body || {};
@@ -680,44 +596,55 @@ app.post('/api/doors/:n/reactions', auth, (req, res) => {
     return res.status(400).json({ error: 'Choose one of the listed reactions' });
   }
 
-  const existing = db
-    .prepare('SELECT 1 FROM movie_reactions WHERE username=? AND door=? AND emoji=?')
-    .get(req.user.username, doorNumber, emoji);
+  const existing = await prisma.movie_reactions.findUnique({
+    where: {
+      username_door_emoji: {
+        username: req.user.username,
+        door: doorNumber,
+        emoji,
+      },
+    },
+  });
   if (existing) {
-    db.prepare(
-      'DELETE FROM movie_reactions WHERE username=? AND door=? AND emoji=?',
-    ).run(req.user.username, doorNumber, emoji);
+    await prisma.movie_reactions.delete({
+      where: {
+        username_door_emoji: {
+          username: req.user.username,
+          door: doorNumber,
+          emoji,
+        },
+      },
+    });
   } else {
-    db.prepare(
-      'INSERT INTO movie_reactions(username,door,emoji) VALUES(?,?,?)',
-    ).run(req.user.username, doorNumber, emoji);
+    await prisma.movie_reactions.create({
+      data: { username: req.user.username, door: doorNumber, emoji },
+    });
   }
-  const counts = db
-    .prepare(
-      'SELECT emoji, COUNT(*) AS count FROM movie_reactions WHERE door=? GROUP BY emoji',
-    )
-    .all(doorNumber);
-  const mine = new Set(
-    db
-      .prepare('SELECT emoji FROM movie_reactions WHERE username=? AND door=?')
-      .all(req.user.username, doorNumber)
-      .map((row) => row.emoji),
-  );
+  const counts = await prisma.movie_reactions.groupBy({
+    by: ['emoji'],
+    where: { door: doorNumber },
+    _count: { emoji: true },
+  });
+  const mineRows = await prisma.movie_reactions.findMany({
+    where: { username: req.user.username, door: doorNumber },
+    select: { emoji: true },
+  });
+  const mine = new Set(mineRows.map((row) => row.emoji));
   res.json({
     reactions: REACTIONS.map((reaction) => ({
       emoji: reaction,
-      count: counts.find((row) => row.emoji === reaction)?.count || 0,
+      count: counts.find((row) => row.emoji === reaction)?._count.emoji || 0,
       reacted: mine.has(reaction),
     })),
   });
 });
 
-app.post('/api/doors/:n/comments', auth, (req, res) => {
+app.post('/api/doors/:n/comments', auth, async (req, res) => {
   if (!/^\d+$/.test(req.params.n)) {
     return res.status(400).json({ error: 'Choose a valid movie door' });
   }
   const doorNumber = Number(req.params.n);
-  if (!doorExistsAndUnlocked(doorNumber)) {
+  if (!(await doorExistsAndUnlocked(doorNumber))) {
     return res.status(403).json({ error: 'Comments open when the movie is available' });
   }
   const comment =
@@ -725,39 +652,40 @@ app.post('/api/doors/:n/comments', auth, (req, res) => {
   if (!comment || comment.length > 140) {
     return res.status(400).json({ error: 'Comments must be 1 to 140 characters' });
   }
-  const result = db
-    .prepare('INSERT INTO movie_comments(username,door,comment) VALUES(?,?,?)')
-    .run(req.user.username, doorNumber, comment);
-  const saved = db
-    .prepare(
-      `SELECT c.id,c.username,u.name AS author,c.comment,c.created_at
-      FROM movie_comments c JOIN users u ON u.username=c.username WHERE c.id=?`,
-    )
-    .get(result.lastInsertRowid);
-  res.status(201).json(saved);
+  const created = await prisma.movie_comments.create({
+    data: { username: req.user.username, door: doorNumber, comment },
+    include: { users: { select: { name: true } } },
+  });
+  res.status(201).json({
+    id: created.id,
+    username: created.username,
+    author: created.users.name,
+    comment: created.comment,
+    created_at: created.created_at,
+  });
 });
 
-app.delete('/api/doors/:n/comments/:id', auth, (req, res) => {
+app.delete('/api/doors/:n/comments/:id', auth, async (req, res) => {
   if (!/^\d+$/.test(req.params.n) || !/^\d+$/.test(req.params.id)) {
     return res.status(400).json({ error: 'Choose a valid comment' });
   }
-  const comment = db
-    .prepare('SELECT username FROM movie_comments WHERE id=? AND door=?')
-    .get(Number(req.params.id), Number(req.params.n));
+  const comment = await prisma.movie_comments.findFirst({
+    where: { id: Number(req.params.id), door: Number(req.params.n) },
+  });
   if (!comment) return res.status(404).json({ error: 'Comment not found' });
   if (comment.username !== req.user.username && !req.user.admin) {
     return res.status(403).json({ error: 'You can only remove your own comments' });
   }
-  db.prepare('DELETE FROM movie_comments WHERE id=?').run(Number(req.params.id));
+  await prisma.movie_comments.delete({ where: { id: Number(req.params.id) } });
   res.json({ ok: true });
 });
 
-app.post('/api/doors/:n/vote', auth, (req, res) => {
+app.post('/api/doors/:n/vote', auth, async (req, res) => {
   if (!/^\d+$/.test(req.params.n)) {
     return res.status(400).json({ error: 'Choose a valid movie door' });
   }
   const doorNumber = Number(req.params.n);
-  const door = db.prepare('SELECT * FROM doors WHERE door=?').get(doorNumber);
+  const door = await prisma.doors.findUnique({ where: { door: doorNumber } });
   const t = today();
   if (
     !door ||
@@ -773,19 +701,21 @@ app.post('/api/doors/:n/vote', auth, (req, res) => {
   if (!Number.isInteger(candidate) || !candidates[candidate]) {
     return res.status(400).json({ error: 'Choose one of the listed movies' });
   }
-  db.prepare(
-    `INSERT INTO movie_votes(username,door,candidate) VALUES(?,?,?)
-    ON CONFLICT(username,door) DO UPDATE SET candidate=excluded.candidate`,
-  ).run(req.user.username, doorNumber, candidate);
+  await prisma.movie_votes.upsert({
+    where: { username_door: { username: req.user.username, door: doorNumber } },
+    update: { candidate },
+    create: { username: req.user.username, door: doorNumber, candidate },
+  });
   res.json({ candidate });
 });
 
 // ----- admin -----
-app.get('/api/admin/doors', auth, admin, (req, res) => {
-  const doors = db.prepare('SELECT * FROM doors ORDER BY door').all().map((door) => {
-    const rating = ratingSummary(door.door);
+app.get('/api/admin/doors', auth, admin, async (req, res) => {
+  const doorRows = await prisma.doors.findMany({ orderBy: { door: 'asc' } });
+  const doors = await Promise.all(doorRows.map(async (door) => {
+    const rating = await ratingSummary(door.door);
     const candidates = readCandidates(door.vote_candidates);
-    const counts = voteTally(door.door, candidates);
+    const counts = await voteTally(door.door, candidates);
     return {
       ...door,
       vote_enabled: !!door.vote_enabled,
@@ -795,18 +725,19 @@ app.get('/api/admin/doors', auth, admin, (req, res) => {
       vote_counts: counts,
       vote_winner: door.vote_winner,
     };
-  });
+  }));
   res.json(doors);
 });
 
-app.put('/api/admin/doors/:n', auth, admin, (req, res) => {
+app.put('/api/admin/doors/:n', auth, admin, async (req, res) => {
   if (!/^\d+$/.test(req.params.n)) {
     return res.status(400).json({ error: 'Choose a valid door' });
   }
   const doorNumber = Number(req.params.n);
-  const existing = db
-    .prepare('SELECT door,vote_enabled,vote_candidates FROM doors WHERE door=?')
-    .get(doorNumber);
+  const existing = await prisma.doors.findUnique({
+    where: { door: doorNumber },
+    select: { door: true, vote_enabled: true, vote_candidates: true },
+  });
   if (!existing) return res.status(404).json({ error: 'Door not found' });
 
   const body = req.body || {};
@@ -890,62 +821,60 @@ app.put('/api/admin/doors/:n', auth, admin, (req, res) => {
   }
 
   const serializedCandidates = JSON.stringify(candidates);
-  const cols = [
-    'unlock_at',
-    ...F,
-    'vote_enabled',
-    'vote_open_at',
-    'vote_candidates',
-    'vote_winner',
-  ];
-  const values = [
-    unlockAt,
-    ...F.map((field) => fields[field]),
-    voteEnabled ? 1 : 0,
-    voteEnabled ? voteOpenAt : null,
-    serializedCandidates,
-    override,
-  ];
-  db.transaction(() => {
-    db.prepare(
-      `UPDATE doors SET ${cols.map((column) => `${column}=?`).join(',')} WHERE door=?`,
-    ).run(...values, doorNumber);
+  await prisma.$transaction(async (tx) => {
+    await tx.doors.update({
+      where: { door: doorNumber },
+      data: {
+        unlock_at: unlockAt,
+        ...fields,
+        vote_enabled: voteEnabled ? 1 : 0,
+        vote_open_at: voteEnabled ? voteOpenAt : null,
+        vote_candidates: serializedCandidates,
+        vote_winner: override,
+      },
+    });
     if (
       existing.vote_enabled !== (voteEnabled ? 1 : 0) ||
       existing.vote_candidates !== serializedCandidates
     ) {
-      db.prepare('DELETE FROM movie_votes WHERE door=?').run(doorNumber);
+      await tx.movie_votes.deleteMany({ where: { door: doorNumber } });
     }
-  })();
+  });
   res.json({ ok: true });
 });
 
-app.post('/api/admin/swap', auth, admin, (req, res) => {
+app.post('/api/admin/swap', auth, admin, async (req, res) => {
   // reorder = swap movies between two doors
   const { a: firstDoor, b: secondDoor } = req.body || {};
   if (!Number.isInteger(firstDoor) || !Number.isInteger(secondDoor)) {
     return res.status(400).json({ error: 'Choose two valid doors' });
   }
-  const g = db.prepare('SELECT * FROM doors WHERE door=?');
-  const a = g.get(firstDoor);
-  const b = g.get(secondDoor);
+  const [a, b] = await Promise.all([
+    prisma.doors.findUnique({ where: { door: firstDoor } }),
+    prisma.doors.findUnique({ where: { door: secondDoor } }),
+  ]);
   if (!a || !b) return res.status(400).json({ error: 'No such door' });
 
-  const set = db.prepare(
-    `UPDATE doors SET ${F.map((c) => c + '=?').join(',')} WHERE door=?`,
-  );
-  db.transaction(() => {
-    set.run(...F.map((c) => b[c]), a.door);
-    set.run(...F.map((c) => a[c]), b.door);
-  })();
+  await prisma.$transaction([
+    prisma.doors.update({
+      where: { door: a.door },
+      data: Object.fromEntries(F.map((field) => [field, b[field]])),
+    }),
+    prisma.doors.update({
+      where: { door: b.door },
+      data: Object.fromEntries(F.map((field) => [field, a[field]])),
+    }),
+  ]);
   res.json({ ok: true });
 });
 
-app.get('/api/admin/users', auth, admin, (req, res) =>
-  res.json(db.prepare('SELECT username,name,admin FROM users').all()),
+app.get('/api/admin/users', auth, admin, async (req, res) =>
+  res.json(await prisma.users.findMany({
+    select: { username: true, name: true, admin: true },
+  })),
 );
 
-app.post('/api/admin/users', auth, admin, (req, res) => {
+app.post('/api/admin/users', auth, admin, async (req, res) => {
   const { username = '', password = '' } = req.body || {};
   const normalizedUsername =
     typeof username === 'string' ? username.trim().toLowerCase() : '';
@@ -956,54 +885,47 @@ app.post('/api/admin/users', auth, admin, (req, res) => {
   }
 
   try {
-    db.prepare(
-      'INSERT INTO users(username,name,hash,admin) VALUES(?,?,?,0)',
-    ).run(normalizedUsername, username.trim(), bcrypt.hashSync(password, 12));
+    await prisma.users.create({
+      data: {
+        username: normalizedUsername,
+        name: username.trim(),
+        hash: bcrypt.hashSync(password, 12),
+        admin: 0,
+      },
+    });
     res.json({ ok: true });
   } catch (error) {
-    if (
-      error.code === 'SQLITE_CONSTRAINT_UNIQUE' ||
-      error.code === 'SQLITE_CONSTRAINT_PRIMARYKEY'
-    ) {
+    if (error.code === 'P2002') {
       return res.status(409).json({ error: 'That username already exists' });
     }
     throw error;
   }
 });
 
-app.delete('/api/admin/users/:u', auth, admin, (req, res) => {
-  db.prepare('DELETE FROM users WHERE username=? AND admin=0').run(req.params.u);
+app.delete('/api/admin/users/:u', auth, admin, async (req, res) => {
+  await prisma.users.deleteMany({
+    where: { username: req.params.u, admin: 0 },
+  });
   res.json({ ok: true });
 });
 
-app.get('/api/admin/backup', auth, admin, (req, res) => {
+app.get('/api/admin/backup', auth, admin, async (req, res) => {
   // free hosts can wipe the database: keep a backup!
   res
     .attachment('movies-backup.json')
-    .json(db.prepare('SELECT * FROM doors ORDER BY door').all());
+    .json(await prisma.doors.findMany({ orderBy: { door: 'asc' } }));
 });
 
-app.post('/api/admin/restore', auth, admin, (req, res) => {
+app.post('/api/admin/restore', auth, admin, async (req, res) => {
   if (!Array.isArray(req.body)) {
     return res.status(400).json({ error: 'Backup must contain a list of doors' });
   }
-  const cols = [
-    'unlock_at',
-    ...F,
-    'vote_enabled',
-    'vote_open_at',
-    'vote_candidates',
-    'vote_winner',
-  ];
-  const up = db.prepare(
-    `UPDATE doors SET ${cols.map((column) => `${column}=?`).join(',')} WHERE door=?`,
-  );
   const rows = [];
   for (const row of req.body) {
     if (!row || !Number.isInteger(row.door) || !validDate(row.unlock_at)) {
       return res.status(400).json({ error: 'Backup has an invalid door or date' });
     }
-    const current = db.prepare('SELECT door FROM doors WHERE door=?').get(row.door);
+    const current = await prisma.doors.findUnique({ where: { door: row.door } });
     if (!current) return res.status(400).json({ error: `Door ${row.door} does not exist` });
 
     const fieldLimits = {
@@ -1065,17 +987,24 @@ app.post('/api/admin/restore', auth, admin, (req, res) => {
     ) {
       return res.status(400).json({ error: 'Backup has an invalid vote winner' });
     }
-    rows.push([
-      row.unlock_at,
-      ...fields,
-      enabled ? 1 : 0,
-      enabled ? row.vote_open_at : null,
-      JSON.stringify(candidates),
-      winner,
-      row.door,
-    ]);
+    rows.push({
+      door: row.door,
+      unlock_at: row.unlock_at,
+      ...Object.fromEntries(F.map((field, index) => [field, fields[index]])),
+      vote_enabled: enabled ? 1 : 0,
+      vote_open_at: enabled ? row.vote_open_at : null,
+      vote_candidates: JSON.stringify(candidates),
+      vote_winner: winner,
+    });
   }
-  db.transaction(() => rows.forEach((values) => up.run(...values)))();
+  await prisma.$transaction(
+    rows.map((row) =>
+      prisma.doors.update({
+        where: { door: row.door },
+        data: row,
+      }),
+    ),
+  );
   res.json({ ok: true });
 });
 
@@ -1091,4 +1020,11 @@ app.use((error, req, res, next) => {
   console.error('Unhandled request error:', error);
   res.status(500).json({ error: 'An unexpected server error occurred' });
 });
-app.listen(port, () => console.log(`🎄 Running on port ${port}`));
+bootstrap()
+  .then(() => {
+    app.listen(port, () => console.log(`🎄 Running on port ${port}`));
+  })
+  .catch((error) => {
+    console.error('Failed to start Prisma database:', error);
+    process.exit(1);
+  });
