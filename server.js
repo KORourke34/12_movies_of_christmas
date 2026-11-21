@@ -6,9 +6,35 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const cookieParser = require('cookie-parser');
 const path = require('path');
+const crypto = require('crypto');
 const cfg = require('./config');
 
-const SECRET = process.env.SECRET || 'dev-only-change-me'; // set a long random SECRET online
+const production = process.env.NODE_ENV === 'production';
+const registrationEnabled = production
+  ? process.env.REGISTRATION_ENABLED === 'true'
+  : process.env.REGISTRATION_ENABLED !== 'false';
+const SECRET = process.env.SECRET || crypto.randomBytes(32).toString('hex');
+const validPassword = (password) =>
+  typeof password === 'string' &&
+  [...password].length >= 12 &&
+  Buffer.byteLength(password, 'utf8') <= 72;
+if (production && (!process.env.SECRET || Buffer.byteLength(SECRET, 'utf8') < 32)) {
+  throw new Error('Production requires a SECRET of at least 32 bytes');
+}
+if (production && (!process.env.ADMIN_USER || !process.env.ADMIN_PASS)) {
+  throw new Error('Production requires ADMIN_USER and ADMIN_PASS');
+}
+if (process.env.ADMIN_PASS && !validPassword(process.env.ADMIN_PASS)) {
+  throw new Error('ADMIN_PASS must be at least 12 characters and no more than 72 UTF-8 bytes');
+}
+const port = Number(process.env.PORT || 3000);
+if (!Number.isInteger(port) || port < 1 || port > 65535) {
+  throw new Error('PORT must be an integer between 1 and 65535');
+}
+const trustProxyHops = Number(process.env.TRUST_PROXY_HOPS || 0);
+if (!Number.isInteger(trustProxyHops) || trustProxyHops < 0) {
+  throw new Error('TRUST_PROXY_HOPS must be a non-negative integer');
+}
 const db = new Database(
   process.env.DB_PATH || path.join(__dirname, 'advent.db'),
 );
@@ -152,22 +178,85 @@ cfg.dates.forEach((d, i) => {
 
 // Admin account comes from environment variables (password is hashed before saving).
 if (process.env.ADMIN_USER && process.env.ADMIN_PASS) {
+  const adminUsername = process.env.ADMIN_USER.trim().toLowerCase();
+  if (!/^[a-z0-9._-]{3,32}$/.test(adminUsername)) {
+    throw new Error('ADMIN_USER must be 3 to 32 letters, numbers, dots, underscores or hyphens');
+  }
   db.prepare(
     `INSERT INTO users(username,name,hash,admin) VALUES(?,?,?,1)
     ON CONFLICT(username) DO UPDATE SET hash=excluded.hash, admin=1`,
   ).run(
-    process.env.ADMIN_USER.toLowerCase(),
-    process.env.ADMIN_USER,
-    bcrypt.hashSync(process.env.ADMIN_PASS, 10),
+    adminUsername,
+    process.env.ADMIN_USER.trim(),
+    bcrypt.hashSync(process.env.ADMIN_PASS, 12),
   );
 }
 
 const app = express();
-app.set('trust proxy', 1);
+app.disable('x-powered-by');
+app.set('trust proxy', trustProxyHops);
+app.use((req, res, next) => {
+  res.set({
+    'Content-Security-Policy': "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https:; media-src 'self'; connect-src 'self'",
+    'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'DENY',
+    'Referrer-Policy': 'strict-origin-when-cross-origin',
+    'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
+    'Cache-Control': 'no-store',
+  });
+  next();
+});
 app.use(express.json({ limit: '8mb' }), cookieParser());
 
-const today = () =>
-  new Date().toLocaleDateString('en-CA', { timeZone: cfg.timezone });
+const createRateLimiter = ({ windowMs, max, message }) => {
+  const attempts = new Map();
+  const cleanup = setInterval(() => {
+    const now = Date.now();
+    for (const [ip, attempt] of attempts) {
+      if (attempt.resetAt <= now) attempts.delete(ip);
+    }
+  }, Math.min(windowMs, 60_000));
+  cleanup.unref();
+
+  return (req, res, next) => {
+    const now = Date.now();
+    let attempt = attempts.get(req.ip);
+    if (!attempt || attempt.resetAt <= now) {
+      if (!attempt && attempts.size >= 10_000) {
+        attempts.delete(attempts.keys().next().value);
+      }
+      attempt = { count: 0, resetAt: now + windowMs };
+      attempts.set(req.ip, attempt);
+    }
+    if (attempt.count >= max) {
+      res.set('Retry-After', Math.ceil((attempt.resetAt - now) / 1000));
+      return res.status(429).json({ error: message });
+    }
+    attempt.count += 1;
+    next();
+  };
+};
+const loginRateLimit = createRateLimiter({
+  windowMs: 15 * 60_000,
+  max: 20,
+  message: 'Too many login attempts. Please try again later.',
+});
+const registrationRateLimit = createRateLimiter({
+  windowMs: 60 * 60_000,
+  max: 10,
+  message: 'Too many account creation attempts. Please try again later.',
+});
+
+const today = () => {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: cfg.timezone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(new Date());
+  const date = Object.fromEntries(parts.map(({ type, value }) => [type, value]));
+  return `${date.year}-${date.month}-${date.day}`;
+};
 const validDate = (value) => {
   if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
     return false;
@@ -239,7 +328,12 @@ const auth = (req, res, next) => {
   }
   if (!username) return res.status(401).json({ error: 'Please log in again' });
 
-  req.user = { ...claims, username };
+  const currentUser = db
+    .prepare('SELECT username,admin FROM users WHERE username=?')
+    .get(username);
+  if (!currentUser) return res.status(401).json({ error: 'Please log in again' });
+
+  req.user = { ...claims, username: currentUser.username, admin: !!currentUser.admin };
   next();
 };
 const admin = (req, res, next) =>
@@ -255,18 +349,27 @@ const setSession = (res, u) => {
     {
       httpOnly: true,
       sameSite: 'lax',
-      secure: process.env.NODE_ENV === 'production',
+      secure: production,
       maxAge: 30 * 864e5,
     },
   );
 };
 
-app.post('/api/login', (req, res) => {
-  const { username = '', password = '' } = req.body;
+app.post('/api/login', loginRateLimit, (req, res) => {
+  const { username = '', password = '' } = req.body || {};
+  const normalizedUsername =
+    typeof username === 'string' ? username.trim().toLowerCase() : '';
+  const passwordValue = typeof password === 'string' ? password : '';
+  if (
+    normalizedUsername.length > 32 ||
+    Buffer.byteLength(passwordValue, 'utf8') > 72
+  ) {
+    return res.status(401).json({ error: 'Wrong username or password' });
+  }
   const u = db
     .prepare('SELECT * FROM users WHERE username=?')
-    .get(String(username).trim().toLowerCase());
-  if (!u || !bcrypt.compareSync(String(password), u.hash)) {
+    .get(normalizedUsername);
+  if (!u || !bcrypt.compareSync(passwordValue, u.hash)) {
     return res.status(401).json({ error: 'Wrong username or password' });
   }
 
@@ -274,7 +377,10 @@ app.post('/api/login', (req, res) => {
   res.json({ name: u.name, admin: !!u.admin });
 });
 
-app.post('/api/register', (req, res) => {
+app.post('/api/register', registrationRateLimit, (req, res) => {
+  if (!registrationEnabled) {
+    return res.status(403).json({ error: 'Account creation is disabled' });
+  }
   const body = req.body || {};
   const firstName =
     typeof body.firstName === 'string' ? body.firstName.trim() : '';
@@ -289,13 +395,16 @@ app.post('/api/register', (req, res) => {
   if (
     !firstName ||
     !lastName ||
-    !username ||
-    password.length < 4 ||
+    !/^[a-z0-9._-]{3,32}$/i.test(username) ||
+    !validPassword(password) ||
+    firstName.length > 80 ||
+    lastName.length > 80 ||
+    email.length > 254 ||
     !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
   ) {
     return res.status(400).json({
       error:
-        'Enter your first and last name, a valid email, a username, and a password of at least 4 characters',
+        'Enter names up to 80 characters, a valid email, a 3–32 character username, and a password of at least 12 characters (maximum 72 UTF-8 bytes)',
     });
   }
 
@@ -308,7 +417,7 @@ app.post('/api/register', (req, res) => {
     ).run(
       normalizedUsername,
       name,
-      bcrypt.hashSync(password, 10),
+      bcrypt.hashSync(password, 12),
       firstName,
       lastName,
       email,
@@ -813,9 +922,13 @@ app.put('/api/admin/doors/:n', auth, admin, (req, res) => {
 
 app.post('/api/admin/swap', auth, admin, (req, res) => {
   // reorder = swap movies between two doors
+  const { a: firstDoor, b: secondDoor } = req.body || {};
+  if (!Number.isInteger(firstDoor) || !Number.isInteger(secondDoor)) {
+    return res.status(400).json({ error: 'Choose two valid doors' });
+  }
   const g = db.prepare('SELECT * FROM doors WHERE door=?');
-  const a = g.get(req.body.a);
-  const b = g.get(req.body.b);
+  const a = g.get(firstDoor);
+  const b = g.get(secondDoor);
   if (!a || !b) return res.status(400).json({ error: 'No such door' });
 
   const set = db.prepare(
@@ -833,24 +946,28 @@ app.get('/api/admin/users', auth, admin, (req, res) =>
 );
 
 app.post('/api/admin/users', auth, admin, (req, res) => {
-  const { username = '', password = '' } = req.body;
-  if (!username.trim() || password.length < 4) {
+  const { username = '', password = '' } = req.body || {};
+  const normalizedUsername =
+    typeof username === 'string' ? username.trim().toLowerCase() : '';
+  if (!/^[a-z0-9._-]{3,32}$/.test(normalizedUsername) || !validPassword(password)) {
     return res
       .status(400)
-      .json({ error: 'Need a name and a password of 4+ characters' });
+      .json({ error: 'Usernames must be 3–32 letters, numbers, dots, underscores or hyphens; passwords need 12+ characters (maximum 72 UTF-8 bytes)' });
   }
 
   try {
     db.prepare(
       'INSERT INTO users(username,name,hash,admin) VALUES(?,?,?,0)',
-    ).run(
-      username.trim().toLowerCase(),
-      username.trim(),
-      bcrypt.hashSync(password, 10),
-    );
+    ).run(normalizedUsername, username.trim(), bcrypt.hashSync(password, 12));
     res.json({ ok: true });
-  } catch {
-    res.status(400).json({ error: 'That username already exists' });
+  } catch (error) {
+    if (
+      error.code === 'SQLITE_CONSTRAINT_UNIQUE' ||
+      error.code === 'SQLITE_CONSTRAINT_PRIMARYKEY'
+    ) {
+      return res.status(409).json({ error: 'That username already exists' });
+    }
+    throw error;
   }
 });
 
@@ -963,8 +1080,15 @@ app.post('/api/admin/restore', auth, admin, (req, res) => {
 });
 
 app.use(express.static(path.join(__dirname, 'public')));
-app.listen(process.env.PORT || 3000, () =>
-  console.log(
-    '🎄 Running on http://localhost:' + (process.env.PORT || 3000),
-  ),
-);
+app.use((error, req, res, next) => {
+  if (res.headersSent) return next(error);
+  if (error.type === 'entity.too.large') {
+    return res.status(413).json({ error: 'Request body is too large' });
+  }
+  if (error instanceof SyntaxError && error.type === 'entity.parse.failed') {
+    return res.status(400).json({ error: 'Request body must be valid JSON' });
+  }
+  console.error('Unhandled request error:', error);
+  res.status(500).json({ error: 'An unexpected server error occurred' });
+});
+app.listen(port, () => console.log(`🎄 Running on port ${port}`));

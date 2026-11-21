@@ -37,23 +37,6 @@
     </main>
     <script src="js/api.js"></script>
     <script src="js/fx.js"></script>
-    <script>
-      api('/me')
-        .then(() => (location.href = 'calendar.html'))
-        .catch(() => {});
-
-      $('#lf').onsubmit = async (e) => {
-        e.preventDefault();
-        try {
-          await api('/login', {
-            method: 'POST',
-            body: { username: $('#u').value, password: $('#p').value },
-          });
-          location.href = 'calendar.html';
-        } catch (x) {
-          $('#err').textContent = x.message;
-        }
-      };
-    </script>
+    <script src="js/login.js"></script>
   </body>
 </html>

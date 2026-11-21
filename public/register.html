@@ -41,7 +41,19 @@
             id="p"
             type="password"
             autocomplete="new-password"
-            minlength="4"
+            minlength="12"
+            maxlength="72"
+            required
+          >
+        </label>
+        <label>
+          Repeat password
+          <input
+            id="confirm-password"
+            type="password"
+            autocomplete="new-password"
+            minlength="12"
+            maxlength="72"
             required
           >
         </label>
@@ -54,29 +66,6 @@
     </main>
     <script src="js/api.js"></script>
     <script src="js/fx.js"></script>
-    <script>
-      api('/me')
-        .then(() => (location.href = 'calendar.html'))
-        .catch(() => {});
-
-      $('#rf').onsubmit = async (e) => {
-        e.preventDefault();
-        try {
-          await api('/register', {
-            method: 'POST',
-            body: {
-              firstName: $('#first').value,
-              lastName: $('#last').value,
-              email: $('#email').value,
-              username: $('#u').value,
-              password: $('#p').value,
-            },
-          });
-          location.href = 'calendar.html';
-        } catch (x) {
-          $('#err').textContent = x.message;
-        }
-      };
-    </script>
+    <script src="js/register.js"></script>
   </body>
 </html>

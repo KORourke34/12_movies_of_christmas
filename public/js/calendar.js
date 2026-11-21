@@ -83,8 +83,9 @@
     }
   };
 
-  const key = 'opened:' + me.name;
-  const opened = new Set(JSON.parse(localStorage.getItem(key) || '[]'));
+  const key = 'opened:' + me.username;
+  const storedOpened = readStored(key, []);
+  const opened = new Set(Array.isArray(storedOpened) ? storedOpened : []);
   const { today, doors, ...progress } = await api('/doors');
   renderProgress(progress);
   const icons = [

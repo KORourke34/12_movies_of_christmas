@@ -123,18 +123,53 @@ const data = (f) => {
   return result;
 };
 const toData = (file) =>
-  new Promise((r) => {
-    const i = new Image();
-    i.onload = () => {
-      // shrink uploads to 400px wide
-      const s = Math.min(1, 400 / i.width);
-      const c = document.createElement('canvas');
-      c.width = i.width * s;
-      c.height = i.height * s;
-      c.getContext('2d').drawImage(i, 0, 0, c.width, c.height);
-      r(c.toDataURL('image/jpeg', 0.8));
+  new Promise((resolve, reject) => {
+    if (!file.type.startsWith('image/') || file.size > 10 * 1024 * 1024) {
+      reject(new Error('Choose an image smaller than 10 MB'));
+      return;
+    }
+
+    const image = new Image();
+    const objectUrl = URL.createObjectURL(file);
+    const cleanup = () => URL.revokeObjectURL(objectUrl);
+    image.onload = () => {
+      cleanup();
+      if (
+        !image.naturalWidth ||
+        !image.naturalHeight ||
+        image.naturalWidth > 10000 ||
+        image.naturalHeight > 10000
+      ) {
+        reject(new Error('That image has unsupported dimensions'));
+        return;
+      }
+
+      try {
+        const scale = Math.min(1, 400 / image.naturalWidth);
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.round(image.naturalWidth * scale);
+        canvas.height = Math.round(image.naturalHeight * scale);
+        const context = canvas.getContext('2d');
+        if (!context) {
+          reject(new Error('Could not process that image'));
+          return;
+        }
+        context.drawImage(image, 0, 0, canvas.width, canvas.height);
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
+        if (dataUrl.length > 2_500_000) {
+          reject(new Error('That image is too large after processing'));
+          return;
+        }
+        resolve(dataUrl);
+      } catch {
+        reject(new Error('Could not process that image'));
+      }
     };
-    i.src = URL.createObjectURL(file);
+    image.onerror = () => {
+      cleanup();
+      reject(new Error('Could not read that image'));
+    };
+    image.src = objectUrl;
   });
 
 $('#doors').onsubmit = async (e) => {
@@ -154,7 +189,12 @@ $('#doors').onsubmit = async (e) => {
 
 $('#doors').onchange = async (e) => {
   if (e.target.dataset.act === 'file' && e.target.files[0]) {
-    e.target.form.poster.value = await toData(e.target.files[0]);
+    try {
+      e.target.form.poster.value = await toData(e.target.files[0]);
+    } catch (error) {
+      msg(error.message);
+      e.target.value = '';
+    }
   }
 };
 
