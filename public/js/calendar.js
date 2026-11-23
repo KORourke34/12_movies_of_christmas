@@ -8,6 +8,7 @@
   }
   if (me.mustChange) return (location.href = 'password.html');
 
+  if (me.admin) $('#admin-dashboard-link').hidden = false;
   $('#hello').textContent = 'Hi ' + me.name + '!';
   $('#profile-name').textContent = me.name;
   $('#profile-first-name').textContent = me.first_name || 'Not provided';

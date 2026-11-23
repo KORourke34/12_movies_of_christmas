@@ -30,29 +30,145 @@
       </form>
     </main>
     <main id="dash" class="admin" hidden>
-      <h1>Admin dashboard</h1>
-      <p><a href="calendar.html">← Calendar</a></p>
-      <h2>Doors</h2>
-      <div id="doors"></div>
-      <h2>Friends' accounts</h2>
-      <ul id="users"></ul>
-      <form id="uf" class="row">
-        <input id="nu" placeholder="username" required>
-        <input id="np" type="password" minlength="12" maxlength="72" placeholder="password (12+ characters)" required>
-        <input id="ne" type="email" maxlength="254" placeholder="friend email (required for reset)">
-        <button class="btn">Add friend</button>
-      </form>
-      <h2>Backup</h2>
-      <p class="small">
-        Free hosts can reset the database when they restart. Download a backup
-        after every change. Door details, trailers and vote settings are included.
-        Ratings and comments are not included.
-      </p>
-      <a class="btn" href="/api/admin/backup">Download backup</a>
-      <label class="btn">
-        Restore backup
-        <input id="rs" type="file" accept=".json" hidden>
-      </label>
+      <header class="admin-header">
+        <h1>Admin dashboard</h1>
+        <a class="btn" href="calendar.html">View calendar</a>
+      </header>
+      <nav class="admin-tabs" role="tablist" aria-label="Admin dashboard sections">
+        <button
+          id="tab-overview"
+          class="admin-tab"
+          type="button"
+          role="tab"
+          aria-selected="true"
+          aria-controls="panel-overview"
+          tabindex="0"
+        >Overview</button>
+        <button
+          id="tab-movies"
+          class="admin-tab"
+          type="button"
+          role="tab"
+          aria-selected="false"
+          aria-controls="panel-movies"
+          tabindex="-1"
+        >Movies</button>
+        <button
+          id="tab-accounts"
+          class="admin-tab"
+          type="button"
+          role="tab"
+          aria-selected="false"
+          aria-controls="panel-accounts"
+          tabindex="-1"
+        >Accounts</button>
+        <button
+          id="tab-backup"
+          class="admin-tab"
+          type="button"
+          role="tab"
+          aria-selected="false"
+          aria-controls="panel-backup"
+          tabindex="-1"
+        >Backup / Settings</button>
+      </nav>
+      <section
+        id="panel-overview"
+        class="admin-panel"
+        role="tabpanel"
+        aria-labelledby="tab-overview"
+        tabindex="0"
+      >
+        <h2>Overview</h2>
+        <div class="overview-grid">
+          <article class="overview-card">
+            <h3>Movies added</h3>
+            <p id="overview-movies">Loading…</p>
+          </article>
+          <article class="overview-card">
+            <h3>Next unlock</h3>
+            <p id="overview-next">Loading…</p>
+          </article>
+          <article class="overview-card">
+            <h3>Friend accounts</h3>
+            <p id="overview-friends">Loading…</p>
+          </article>
+        </div>
+      </section>
+      <section
+        id="panel-movies"
+        class="admin-panel"
+        role="tabpanel"
+        aria-labelledby="tab-movies"
+        tabindex="0"
+        hidden
+      >
+        <h2>Movies</h2>
+        <p class="small">Ratings and friends' pick voting are managed with each door.</p>
+        <div class="row movie-list-controls">
+          <button id="expand-all" class="btn alt" type="button">Expand all</button>
+          <button id="collapse-all" class="btn alt" type="button">Collapse all</button>
+        </div>
+        <div id="doors"></div>
+      </section>
+      <section
+        id="panel-accounts"
+        class="admin-panel"
+        role="tabpanel"
+        aria-labelledby="tab-accounts"
+        tabindex="0"
+        hidden
+      >
+        <h2>Friends' accounts</h2>
+        <label class="account-search" for="user-search">
+          Search accounts by name, username, or email
+          <input
+            id="user-search"
+            type="search"
+            autocomplete="off"
+            placeholder="Search friends…"
+          >
+        </label>
+        <p id="user-search-status" class="small" role="status" aria-live="polite"></p>
+        <ul id="users"></ul>
+        <form id="uf" class="account-create-form">
+          <h3>Add a friend account</h3>
+          <label for="nu">Username (used to sign in)
+            <input id="nu" autocomplete="username" required>
+          </label>
+          <label for="np">Initial password (used to sign in)
+            <input id="np" type="password" autocomplete="new-password" minlength="12" maxlength="72" placeholder="12+ characters" required>
+          </label>
+          <label for="ncp">Confirm initial password
+            <input id="ncp" type="password" autocomplete="new-password" minlength="12" maxlength="72" placeholder="Enter the same password again" required>
+          </label>
+          <label for="ne">Email (password reset links are sent here)
+            <input id="ne" type="email" autocomplete="email" maxlength="254" required>
+          </label>
+          <button class="btn">Create friend account</button>
+          <p id="account-create-error" class="err" role="alert"></p>
+        </form>
+      </section>
+      <section
+        id="panel-backup"
+        class="admin-panel"
+        role="tabpanel"
+        aria-labelledby="tab-backup"
+        tabindex="0"
+        hidden
+      >
+        <h2>Backup / Settings</h2>
+        <p class="small">
+          Free hosts can reset the database when they restart. Download a backup
+          after every change. Door details, trailers and vote settings are included.
+          Ratings and comments are not included.
+        </p>
+        <a class="btn" href="/api/admin/backup">Download backup</a>
+        <label class="btn restore-backup">
+          Restore backup
+          <input id="rs" type="file" accept=".json" hidden>
+        </label>
+      </section>
       <p id="msg" role="status"></p>
     </main>
     <div
@@ -69,6 +185,7 @@
       </div>
     </div>
     <script src="js/api.js"></script>
+    <script src="js/password-toggle.js"></script>
     <script src="js/fx.js"></script>
     <script src="js/admin.js"></script>
   </body>

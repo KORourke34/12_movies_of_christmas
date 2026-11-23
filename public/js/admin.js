@@ -1,6 +1,59 @@
 // admin.js – admin login + dashboard (edit doors, preview, reorder, manage friends, backup).
 let doors = [];
 let liveRefresh;
+const openMoviesKey = 'admin-open-movies';
+const tabNames = ['overview', 'movies', 'accounts', 'backup'];
+
+function setActiveTab(name, { updateHash = false, focus = false } = {}) {
+  const active = tabNames.includes(name) ? name : 'overview';
+  tabNames.forEach((tabName) => {
+    const tab = $(`#tab-${tabName}`);
+    const selected = tabName === active;
+    tab.setAttribute('aria-selected', String(selected));
+    tab.tabIndex = selected ? 0 : -1;
+    $(`#panel-${tabName}`).hidden = !selected;
+  });
+  if (focus) $(`#tab-${active}`).focus();
+  if (updateHash && location.hash !== `#${active}`) {
+    location.hash = active;
+  }
+}
+
+function activateTabFromHash() {
+  setActiveTab(location.hash.slice(1));
+}
+
+document.querySelector('[role="tablist"]').addEventListener('click', (event) => {
+  const tab = event.target.closest('[role="tab"]');
+  if (tab) setActiveTab(tab.id.slice(4), { updateHash: true });
+});
+
+document.querySelector('[role="tablist"]').addEventListener('keydown', (event) => {
+  const currentIndex = tabNames.indexOf(event.target.id.slice(4));
+  if (currentIndex < 0) return;
+
+  let nextIndex;
+  if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
+    nextIndex = (currentIndex + 1) % tabNames.length;
+  } else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
+    nextIndex = (currentIndex - 1 + tabNames.length) % tabNames.length;
+  } else if (event.key === 'Home') {
+    nextIndex = 0;
+  } else if (event.key === 'End') {
+    nextIndex = tabNames.length - 1;
+  } else {
+    return;
+  }
+
+  event.preventDefault();
+  setActiveTab(tabNames[nextIndex], { updateHash: true, focus: true });
+});
+
+if (!location.hash) {
+  history.replaceState(null, '', `${location.pathname}${location.search}#overview`);
+}
+activateTabFromHash();
+window.addEventListener('hashchange', activateTabFromHash);
 
 const msg = (t) => {
   $('#msg').textContent = t;
@@ -38,16 +91,34 @@ $('#lf').onsubmit = async (e) => {
   }
 };
 
-async function load() {
+async function load(openDoor = null) {
   doors = await api('/admin/doors');
-  render();
-  users();
+  render(openDoor);
+  await users();
 }
 
-function render() {
+function render(openDoor = null) {
+  const storedOpen = readStored(openMoviesKey, []);
+  const openDoors = new Set(Array.isArray(storedOpen) ? storedOpen.map(Number) : []);
+  if (openDoor !== null) openDoors.add(Number(openDoor));
+
   $('#doors').innerHTML = doors
     .map(
-      (d) => `<form class="dform" data-n="${d.door}"><h3>Door ${d.door}</h3>
+      (d) => {
+        const isOpen = openDoors.has(d.door);
+        const panelId = `door-panel-${d.door}`;
+        const hasMovie = Boolean(d.title && d.title.trim());
+        return `<article class="movie-card ${isOpen ? 'is-open' : ''}" data-door="${d.door}">
+    <button class="movie-card-toggle" type="button" aria-expanded="${isOpen}" aria-controls="${panelId}" data-act="toggle">
+      <span class="movie-card-door">Door ${d.door}</span>
+      <span class="movie-card-title">${esc(hasMovie ? d.title : 'No movie yet')}</span>
+      <span class="movie-card-date">Unlocks ${esc(d.unlock_at)}</span>
+      <span class="movie-card-status ${hasMovie ? '' : 'empty'}">${hasMovie ? 'Ready' : 'Empty'}</span>
+      <span class="movie-card-chevron" aria-hidden="true">⌄</span>
+    </button>
+    <div id="${panelId}" class="movie-panel" aria-hidden="${!isOpen}" ${isOpen ? '' : 'inert'}>
+      <div class="movie-panel-inner">
+      <form class="dform" data-n="${d.door}">
     <label>Unlock date <input type="date" name="unlock_at" value="${esc(d.unlock_at)}" required></label>
     <label>Title <input name="title" value="${esc(d.title)}"></label>
     <div class="row">
@@ -86,13 +157,73 @@ function render() {
     <div class="row">
       <button class="btn">Save</button>
       <button type="button" class="btn alt" data-act="preview">Preview</button>
+      <button type="button" class="btn alt" data-act="clear">Clear movie</button>
       <button type="button" class="btn alt" data-act="up" aria-label="Swap with door ${d.door - 1}">↑</button>
       <button type="button" class="btn alt" data-act="down" aria-label="Swap with door ${d.door + 1}">↓</button>
     </div>
-  </form>`,
+      </form>
+      </div>
+    </div>
+  </article>`;
+      },
     )
     .join('');
+  saveOpenMovieCards();
 }
+
+function saveOpenMovieCards() {
+  const openDoors = [...document.querySelectorAll('.movie-card.is-open')]
+    .map((card) => Number(card.dataset.door));
+  try {
+    localStorage.setItem(openMoviesKey, JSON.stringify(openDoors));
+  } catch (error) {
+    msg(`Could not remember expanded movie cards: ${error.message}`);
+  }
+}
+
+function setMovieCardOpen(card, open) {
+  card.classList.toggle('is-open', open);
+  const button = card.querySelector('.movie-card-toggle');
+  const panel = card.querySelector('.movie-panel');
+  button.setAttribute('aria-expanded', String(open));
+  panel.setAttribute('aria-hidden', String(!open));
+  panel.toggleAttribute('inert', !open);
+  saveOpenMovieCards();
+}
+
+function updateOverview(friendUsers = null) {
+  const filled = doors.filter((door) => door.title && door.title.trim()).length;
+  $('#overview-movies').textContent = `${filled} of ${doors.length} doors have a movie`;
+
+  const today = new Date();
+  const todayString = [
+    today.getFullYear(),
+    String(today.getMonth() + 1).padStart(2, '0'),
+    String(today.getDate()).padStart(2, '0'),
+  ].join('-');
+  const nextDoor = doors
+    .filter((door) => door.unlock_at >= todayString)
+    .sort((a, b) => a.unlock_at.localeCompare(b.unlock_at) || a.door - b.door)[0];
+  if (!nextDoor) {
+    $('#overview-next').textContent = 'All doors have unlocked';
+  } else {
+    const date = new Date(`${nextDoor.unlock_at}T00:00:00`).toLocaleDateString();
+    const when = nextDoor.unlock_at === todayString ? 'Today' : date;
+    $('#overview-next').textContent = `Door ${nextDoor.door} · ${when}`;
+  }
+  if (friendUsers) {
+    const count = friendUsers.filter((user) => !user.admin).length;
+    $('#overview-friends').textContent = `${count} friend account${count === 1 ? '' : 's'}`;
+  }
+}
+
+$('#expand-all').onclick = () => {
+  document.querySelectorAll('.movie-card').forEach((card) => setMovieCardOpen(card, true));
+};
+
+$('#collapse-all').onclick = () => {
+  document.querySelectorAll('.movie-card').forEach((card) => setMovieCardOpen(card, false));
+};
 
 async function refreshLiveCounts() {
   if (document.hidden || $('#dash').hidden) return;
@@ -175,14 +306,17 @@ const toData = (file) =>
 $('#doors').onsubmit = async (e) => {
   e.preventDefault();
   const f = e.target;
+  const doorNumber = Number(f.dataset.n);
   try {
     await api('/admin/doors/' + f.dataset.n, {
       method: 'PUT',
       body: data(f),
     });
-    await load();
+    await load(doorNumber);
     msg('Saved door ' + f.dataset.n);
   } catch (x) {
+    const card = f.closest('.movie-card');
+    if (card) setMovieCardOpen(card, true);
     msg(x.message);
   }
 };
@@ -199,12 +333,47 @@ $('#doors').onchange = async (e) => {
 };
 
 $('#doors').onclick = async (e) => {
+  const toggle = e.target.closest('.movie-card-toggle');
+  if (toggle) {
+    const card = toggle.closest('.movie-card');
+    setMovieCardOpen(card, toggle.getAttribute('aria-expanded') !== 'true');
+    return;
+  }
+
   const a = e.target.dataset.act;
   const f = e.target.closest('form');
   if (!f || !a || a === 'file') return;
 
   const n = +f.dataset.n;
   if (a === 'preview') return openModal(data(f));
+  if (a === 'clear') {
+    if (!confirm(`Remove the movie details from door ${n}?`)) return;
+    [
+      'title',
+      'year',
+      'runtime',
+      'genre',
+      'watch',
+      'synopsis',
+      'poster',
+      'trailer',
+      'vote_open_at',
+    ].forEach((name) => {
+      f.elements[name].value = '';
+    });
+    f.elements.vote_enabled.checked = false;
+    f.elements.vote_winner.value = '';
+    try {
+      await api('/admin/doors/' + n, { method: 'PUT', body: data(f) });
+      await load(n);
+      msg(`Cleared movie details from door ${n}`);
+    } catch (error) {
+      const card = f.closest('.movie-card');
+      if (card) setMovieCardOpen(card, true);
+      msg(error.message);
+    }
+    return;
+  }
 
   const other = a === 'up' ? n - 1 : n + 1;
   if (other < 1 || other > doors.length) return;
@@ -213,7 +382,7 @@ $('#doors').onclick = async (e) => {
     method: 'POST',
     body: { a: n, b: other },
   });
-  load();
+  await load(n);
   msg(`Swapped movies on doors ${n} and ${other}`);
 };
 
@@ -221,18 +390,50 @@ async function users() {
   const u = await api('/admin/users');
   $('#users').innerHTML = u
     .map(
-      (x) =>
-        `<li>${esc(x.name)}${
-          x.admin
-            ? ' (admin)'
-            : ` <span class="small">${esc(x.email || 'No email set')}</span>
-               <button class="btn alt" type="button" data-email="${esc(x.username)}" data-current-email="${esc(x.email || '')}">Set email</button>
-               <button class="btn alt" type="button" data-reset="${esc(x.username)}">Reset password</button>
-               <button class="btn alt" type="button" data-u="${esc(x.username)}">Remove</button>`
-        }</li>`,
+      (x) => {
+        const searchText = [x.name, x.username, x.email].filter(Boolean).join(' ');
+        return `<li class="account-item" data-search="${esc(searchText)}">
+          <div class="account-item-details">
+            <strong>${esc(x.name)}${x.admin ? ' (admin)' : ''}</strong>
+            <span class="small">${esc(x.username)}</span>
+            ${x.admin ? '' : `<span class="small">${esc(x.email || 'No email set')}</span>`}
+          </div>
+          ${x.admin ? '' : `<div class="account-item-actions">
+            <button class="btn alt" type="button" data-email="${esc(x.username)}" data-current-email="${esc(x.email || '')}">Set email</button>
+            <button class="btn alt" type="button" data-reset="${esc(x.username)}">Reset password</button>
+            <button class="btn alt" type="button" data-u="${esc(x.username)}">Remove</button>
+          </div>`}
+        </li>`;
+      },
     )
     .join('');
+  filterUsers();
+  updateOverview(u);
+  return u;
 }
+
+function filterUsers() {
+  const query = $('#user-search').value.trim().toLowerCase();
+  const userItems = [...$('#users').children];
+  let visibleCount = 0;
+
+  userItems.forEach((item) => {
+    const matches = item.dataset.search.toLowerCase().includes(query);
+    item.hidden = !matches;
+    if (matches) visibleCount += 1;
+  });
+
+  const status = $('#user-search-status');
+  if (!query) {
+    status.textContent = `Showing all ${userItems.length} account${userItems.length === 1 ? '' : 's'}.`;
+  } else if (visibleCount === 0) {
+    status.textContent = 'No accounts match your search.';
+  } else {
+    status.textContent = `Showing ${visibleCount} of ${userItems.length} accounts.`;
+  }
+}
+
+$('#user-search').addEventListener('input', filterUsers);
 
 $('#users').onclick = async (e) => {
   const emailUsername = e.target.dataset.email;
@@ -335,6 +536,7 @@ function openPasswordReset(username) {
       <p id="reset-password-error" class="err" role="alert"></p>
     </form>`;
   $('#modal').hidden = false;
+  setupPasswordToggles($('#mbody'));
 
   $('#generate-password').onclick = () => {
     const password = generateMemorablePassword();
@@ -392,6 +594,13 @@ $('#close').onclick = closeModal;
 
 $('#uf').onsubmit = async (e) => {
   e.preventDefault();
+  $('#account-create-error').textContent = '';
+  if ($('#np').value !== $('#ncp').value) {
+    $('#account-create-error').textContent = 'The passwords do not match. Enter the same password in both fields.';
+    $('#ncp').focus();
+    return;
+  }
+
   try {
     await api('/admin/users', {
       method: 'POST',
@@ -402,9 +611,10 @@ $('#uf').onsubmit = async (e) => {
       },
     });
     e.target.reset();
-    users();
+    await users();
+    msg('Friend account created.');
   } catch (x) {
-    msg(x.message);
+    $('#account-create-error').textContent = x.message;
   }
 };
 
