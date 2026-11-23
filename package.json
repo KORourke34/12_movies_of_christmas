@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "build": "prisma generate",
-    "start": "prisma migrate deploy && node server.js",
+    "start": "prisma db push && node server.js",
     "prisma:generate": "prisma generate",
     "prisma:db-pull": "prisma db pull",
     "prisma:migrate": "prisma migrate dev --name add_password_reset",
