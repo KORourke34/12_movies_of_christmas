@@ -1163,6 +1163,376 @@ textarea {
   margin: 14px 0;
 }
 
+.admin-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.admin-header h1 {
+  margin: 0;
+}
+
+.admin-tabs {
+  display: flex;
+  gap: 8px;
+  max-width: 100%;
+  margin: 0 0 20px;
+  padding: 4px 4px 10px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+}
+
+.admin-tab {
+  flex: 0 0 auto;
+  min-height: 48px;
+  padding: 8px 14px;
+  border: 3px solid var(--ink);
+  border-radius: 12px;
+  background: var(--cream);
+  color: var(--ink);
+  box-shadow: 3px 3px 0 var(--ink);
+  font: 800 1rem var(--body);
+  cursor: pointer;
+}
+
+.admin-tab[aria-selected='true'] {
+  background: var(--gold);
+}
+
+.admin-panel {
+  min-width: 0;
+  padding: 14px;
+  border: 3px solid var(--gold);
+  border-radius: 16px;
+  background: #ffffff14;
+}
+
+.admin-panel h2 {
+  margin-top: 0;
+  color: var(--gold);
+}
+
+.overview-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr));
+  gap: 12px;
+}
+
+.overview-card {
+  min-width: 0;
+  padding: 14px;
+  border: 3px solid var(--ink);
+  border-radius: 14px;
+  background: var(--cream);
+  color: var(--ink);
+  box-shadow: 4px 4px 0 var(--ink);
+}
+
+.overview-card h3 {
+  margin: 0;
+  color: var(--red);
+}
+
+.overview-card p {
+  margin: 8px 0 0;
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+
+.movie-list-controls {
+  margin: 12px 0 18px;
+}
+
+.movie-list-controls > * {
+  flex: 0 1 auto;
+}
+
+.movie-card {
+  margin: 14px 0;
+  border: 3px solid var(--gold);
+  border-radius: 16px;
+  background: #ffffff14;
+  overflow: hidden;
+}
+
+.movie-card-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 64px;
+  padding: 10px 14px;
+  border: 0;
+  background: var(--cream);
+  color: var(--ink);
+  text-align: left;
+  font: 800 1rem var(--body);
+  cursor: pointer;
+}
+
+.movie-card-door {
+  flex: 0 0 auto;
+  color: var(--red);
+  font-family: var(--head);
+  font-size: 1.3rem;
+}
+
+.movie-card-title {
+  min-width: 0;
+  flex: 1;
+  overflow-wrap: anywhere;
+}
+
+.movie-card-date {
+  flex: 0 0 auto;
+  font-size: 0.85rem;
+}
+
+.movie-card-status {
+  flex: 0 0 auto;
+  padding: 3px 8px;
+  border: 2px solid var(--ink);
+  border-radius: 999px;
+  background: var(--gold);
+  font-size: 0.8rem;
+}
+
+.movie-card-status.empty {
+  background: var(--cream);
+}
+
+.movie-card-chevron {
+  flex: 0 0 auto;
+  font-size: 1.25rem;
+  transition: transform 0.2s ease;
+}
+
+.movie-card.is-open .movie-card-chevron {
+  transform: rotate(180deg);
+}
+
+.movie-panel {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition: grid-template-rows 0.25s ease, opacity 0.2s ease;
+}
+
+.movie-card.is-open .movie-panel {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+
+.movie-panel-inner {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.movie-panel .dform {
+  margin: 0;
+  padding: 14px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.restore-backup {
+  margin-left: 8px;
+  cursor: pointer;
+}
+
+.password-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  margin-top: 4px;
+}
+
+.password-control input {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+}
+
+.password-toggle {
+  display: grid;
+  flex: 0 0 48px;
+  place-items: center;
+  width: 48px;
+  min-width: 48px;
+  min-height: 44px;
+  padding: 6px;
+  border: 3px solid var(--ink);
+  border-radius: 10px;
+  background: var(--gold);
+  color: var(--ink);
+  box-shadow: 3px 3px 0 var(--ink);
+  cursor: pointer;
+}
+
+.password-eye {
+  width: 22px;
+  height: 22px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+}
+
+.admin-calendar-link {
+  white-space: nowrap;
+}
+
+.login form > .btn {
+  display: block;
+  width: 100%;
+  min-height: 48px;
+  margin-top: 18px;
+  text-align: center;
+}
+
+.account-create-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+  max-width: 540px;
+  margin-top: 18px;
+}
+
+.account-create-form h3 {
+  margin: 0;
+  color: var(--gold);
+}
+
+.account-create-form label {
+  margin: 0;
+}
+
+.account-create-form .password-control {
+  margin-top: 4px;
+}
+
+.account-create-form > .btn {
+  width: 100%;
+  min-height: 48px;
+}
+
+.account-create-form > .err {
+  margin: 0;
+}
+
+.account-search {
+  max-width: 540px;
+  margin: 0 0 12px;
+}
+
+.account-search input {
+  margin-top: 4px;
+}
+
+#user-search-status {
+  min-height: 1.4em;
+  margin: 0 0 10px;
+}
+
+#users {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.account-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px;
+  border: 3px solid var(--ink);
+  border-radius: 14px;
+  background: var(--cream);
+  color: var(--ink);
+  box-shadow: 3px 3px 0 var(--ink);
+}
+
+.account-item-details {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+  overflow-wrap: anywhere;
+}
+
+.account-item-details .small {
+  color: var(--pine);
+}
+
+.account-item-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  width: 100%;
+}
+
+.account-item-actions .btn {
+  flex: 1 1 130px;
+  text-align: center;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .movie-panel,
+  .movie-card-chevron {
+    transition: none;
+  }
+}
+
+@media (max-width: 560px) {
+  .admin {
+    padding: 12px;
+  }
+
+  .admin-header .btn {
+    width: 100%;
+    text-align: center;
+  }
+
+  .admin-panel {
+    padding: 10px;
+  }
+
+  .account-item-actions .btn {
+    flex-basis: 100%;
+  }
+
+  .movie-card-toggle {
+    flex-wrap: wrap;
+    gap: 6px 8px;
+  }
+
+  .movie-card-title {
+    flex-basis: calc(100% - 70px);
+  }
+
+  .movie-card-date {
+    margin-left: auto;
+  }
+
+  .admin-calendar-link {
+    padding: 8px 10px;
+  }
+}
+
 .calm * {
   animation: none !important;
   transition-duration: 0.01s !important;
