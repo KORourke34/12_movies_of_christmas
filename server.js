@@ -9,10 +9,6 @@ const rateLimit = require('express-rate-limit');
 const path = require('path');
 const crypto = require('crypto');
 const cfg = require('./config');
-const dbPath = process.env.DB_PATH
-  ? path.resolve(process.env.DB_PATH)
-  : path.join(__dirname, 'advent.db');
-process.env.DATABASE_URL = `file:${dbPath}`;
 const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
 
